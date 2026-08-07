@@ -24,7 +24,7 @@ def get_schemas(spark, catalog_name):
 
     return (
         spark.sql(f"SHOW SCHEMAS IN `{catalog_name}`")
-        .select("namespace")
+        .select("databaseName")
     )
 
 
@@ -52,7 +52,7 @@ def discover_tables(spark, catalog_name):
 
     for row in schemas_df.collect():
 
-        schema_name = row["namespace"]
+        schema_name = row["databaseName"]
 
         tables_df = get_tables(
             spark,
