@@ -12,9 +12,6 @@ def main():
     # Get Databricks Spark Session
     # ---------------------------------------
     spark = get_spark_session()
-
-    # ---------------------------------------
-    # Catalog to check
     # ---------------------------------------
     catalog_name = "wmg"
 
