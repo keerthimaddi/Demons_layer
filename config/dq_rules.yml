@@ -84,7 +84,7 @@ dq_framework:
       default_weight: 7
 
     - id: DQ11
-      name: null
+      name: "null"
       description: Identify unexpected null values
       category: null_check
       level: column

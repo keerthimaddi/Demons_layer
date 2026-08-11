@@ -4,29 +4,24 @@ import yaml
 
 def load_dq_rules():
 
-    # Get project root directory
     project_root = os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))
     )
 
-    # Build path to YAML configuration
     rules_path = os.path.join(
         project_root,
         "config",
         "dq_rules.yml"
     )
 
-    # Check whether file exists
     if not os.path.exists(rules_path):
         raise FileNotFoundError(
             f"DQ rules file not found: {rules_path}"
         )
 
-    # Read YAML file
     with open(rules_path, "r", encoding="utf-8") as file:
         config = yaml.safe_load(file)
 
-    # Validate YAML structure
     if not config:
         raise ValueError("DQ rules YAML file is empty.")
 
@@ -42,6 +37,11 @@ def load_dq_rules():
 
     checks = config["dq_framework"]["checks"]
 
+    if len(checks) != 16:
+        raise ValueError(
+            f"Expected 16 DQ checks, but found {len(checks)}"
+        )
+
     print("\n======================================")
     print("DQ RULE CONFIGURATION")
     print("======================================")
@@ -53,7 +53,7 @@ def load_dq_rules():
         print(
             f"{rule['id']} | "
             f"{rule['name']} | "
-            f"Category: {rule['category']} | "
+            f"Level: {rule['level']} | "
             f"Enabled: {rule['enabled']} | "
             f"Weight: {rule['default_weight']}"
         )
@@ -67,4 +67,4 @@ if __name__ == "__main__":
 
     rules = load_dq_rules()
 
-    print("DQ YAML configuration loaded successfully.")
+    print("All 16 DQ rules loaded successfully.")
