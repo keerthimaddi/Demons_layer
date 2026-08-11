@@ -66,12 +66,12 @@ dq_framework:
         warning: 5
         fail: 10
 
-    # -----------------------------------------------
+        # -----------------------------------------------
     # DQ4 - Uniqueness
     # -----------------------------------------------
     - id: DQ4
       name: uniqueness
-      description: Check duplicate records or keys
+      description: Check duplicate records or configured business keys
       category: uniqueness
       level: dataset
       enabled: true
@@ -82,6 +82,18 @@ dq_framework:
         pass: 0
         warning: 2
         fail: 5
+
+        unique_keys:
+
+          wmg.default.customers_100:
+            - customer_id
+
+          wmg.default.databricks: [ ]
+
+          wmg.demo.emea_and_global_data_combined_2_1: [ ]
+
+          wmg.demo.transactions:
+            - transaction_id
 
     # -----------------------------------------------
     # DQ5 - Consistency

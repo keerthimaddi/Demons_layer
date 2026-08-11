@@ -325,32 +325,24 @@ def check_validity(
 # DQ4 - UNIQUENESS
 # ============================================================
 
-# ============================================================
-# DQ4 - UNIQUENESS
-# ============================================================
-
 def check_uniqueness(
     df,
-    threshold
+    threshold,
+    table_name=None
 ):
     """
     DQ4 - Uniqueness
 
-    Checks whether candidate ID/key columns contain
-    duplicate non-null values.
+    Checks duplicate values in configured unique-key columns.
 
-    Candidate columns:
-        - columns containing 'id'
-        - columns containing 'key'
+    The unique keys are configured in dq_rules.yml.
 
-    Important:
-        - NULL values are not treated as duplicates.
-        - Only actual repeated non-null values are counted.
-        - The duplicate percentage is calculated against
-          non-null values only.
+    Example:
 
-    Metric:
-        duplicate_percentage
+        wmg.default.customers_100:
+            - customer_id
+
+    NULL values are not treated as duplicate values.
     """
 
     try:
@@ -361,25 +353,72 @@ def check_uniqueness(
             return "FAIL"
 
         # ----------------------------------------------------
-        # Identify candidate key columns
+        # Get configured unique keys
         # ----------------------------------------------------
 
-        candidate_columns = [
-            c
-            for c in df.columns
-            if (
-                "id" in c.lower()
-                or "key" in c.lower()
-            )
-        ]
+        unique_keys = threshold.get(
+            "unique_keys",
+            {}
+        )
 
-        print(
-            f"DQ4 candidate uniqueness columns: "
-            f"{candidate_columns}"
+        if not isinstance(unique_keys, dict):
+            unique_keys = {}
+
+        configured_columns = unique_keys.get(
+            table_name
         )
 
         # ----------------------------------------------------
-        # No candidate key found
+        # If table is explicitly configured with []
+        # then there is no uniqueness check to perform.
+        # ----------------------------------------------------
+
+        if configured_columns == []:
+            print(
+                "DQ4: No unique key configured for "
+                f"{table_name}"
+            )
+            return "PASS"
+
+        # ----------------------------------------------------
+        # If table has configured keys, use them.
+        # ----------------------------------------------------
+
+        if configured_columns:
+
+            candidate_columns = [
+                column
+                for column in configured_columns
+                if column in df.columns
+            ]
+
+            print(
+                "DQ4 configured uniqueness columns: "
+                f"{candidate_columns}"
+            )
+
+        else:
+
+            # ------------------------------------------------
+            # Fallback automatic detection
+            # ------------------------------------------------
+
+            candidate_columns = [
+                column
+                for column in df.columns
+                if (
+                    column.lower().endswith("_id")
+                    or column.lower().endswith("_key")
+                )
+            ]
+
+            print(
+                "DQ4 automatically detected columns: "
+                f"{candidate_columns}"
+            )
+
+        # ----------------------------------------------------
+        # No candidate columns
         # ----------------------------------------------------
 
         if not candidate_columns:
@@ -389,12 +428,11 @@ def check_uniqueness(
         total_non_null_records = 0
 
         # ----------------------------------------------------
-        # Check each candidate column
+        # Check each unique key
         # ----------------------------------------------------
 
         for column_name in candidate_columns:
 
-            # Ignore NULL values for uniqueness testing
             non_null_df = df.filter(
                 col(column_name).isNotNull()
             )
@@ -406,10 +444,6 @@ def check_uniqueness(
             if non_null_count == 0:
                 continue
 
-            # ------------------------------------------------
-            # Find values occurring more than once
-            # ------------------------------------------------
-
             duplicate_groups = (
                 non_null_df
                 .groupBy(column_name)
@@ -418,10 +452,6 @@ def check_uniqueness(
                     col("count") > 1
                 )
             )
-
-            # ------------------------------------------------
-            # Count rows belonging to duplicate groups
-            # ------------------------------------------------
 
             duplicate_count = (
                 duplicate_groups
@@ -444,7 +474,7 @@ def check_uniqueness(
             )
 
         # ----------------------------------------------------
-        # No values available for uniqueness testing
+        # No values to check
         # ----------------------------------------------------
 
         if total_non_null_records == 0:
@@ -463,10 +493,6 @@ def check_uniqueness(
             f"DQ4 duplicate percentage: "
             f"{duplicate_percentage:.2f}%"
         )
-
-        # ----------------------------------------------------
-        # Convert percentage to PASS/WARNING/FAIL
-        # ----------------------------------------------------
 
         return get_status(
             duplicate_percentage,
@@ -1413,7 +1439,8 @@ def run_dq_checks(
 
     dq_results["DQ4"] = check_uniqueness(
         df,
-        threshold_for("DQ4")
+        threshold_for("DQ4"),
+        f"{catalog}.{schema}.{table}"
     )
 
     dq_results["DQ5"] = check_consistency(
