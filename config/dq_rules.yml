@@ -1,0 +1,289 @@
+dq_framework:
+  version: "1.1"
+
+  # --------------------------------------------------
+  # Overall DQ Score Thresholds
+  # --------------------------------------------------
+  overall_score_threshold:
+    pass: 90
+    warning: 75
+    fail: 0
+
+  # --------------------------------------------------
+  # Individual DQ Rules
+  # --------------------------------------------------
+
+  checks:
+
+    # -----------------------------------------------
+    # DQ1 - Completeness
+    # -----------------------------------------------
+    - id: DQ1
+      name: completeness
+      description: Check required columns for null values
+      category: completeness
+      level: column
+      enabled: true
+      default_weight: 10
+
+      threshold:
+        metric: null_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ2 - Accuracy
+    # -----------------------------------------------
+    - id: DQ2
+      name: accuracy
+      description: Validate values against expected business values
+      category: accuracy
+      level: column
+      enabled: true
+      default_weight: 10
+
+      threshold:
+        metric: accuracy_failure_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ3 - Validity
+    # -----------------------------------------------
+    - id: DQ3
+      name: validity
+      description: Validate values against allowed formats and rules
+      category: validity
+      level: column
+      enabled: true
+      default_weight: 10
+
+      threshold:
+        metric: invalid_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ4 - Uniqueness
+    # -----------------------------------------------
+    - id: DQ4
+      name: uniqueness
+      description: Check duplicate records or keys
+      category: uniqueness
+      level: dataset
+      enabled: true
+      default_weight: 10
+
+      threshold:
+        metric: duplicate_percentage
+        pass: 0
+        warning: 2
+        fail: 5
+
+    # -----------------------------------------------
+    # DQ5 - Consistency
+    # -----------------------------------------------
+    - id: DQ5
+      name: consistency
+      description: Validate consistency between related fields
+      category: consistency
+      level: dataset
+      enabled: true
+      default_weight: 7
+
+      threshold:
+        metric: inconsistency_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ6 - Integrity
+    # -----------------------------------------------
+    - id: DQ6
+      name: integrity
+      description: Validate relationships between datasets
+      category: integrity
+      level: dataset
+      enabled: true
+      default_weight: 7
+
+      threshold:
+        metric: integrity_failure_percentage
+        pass: 0
+        warning: 2
+        fail: 5
+
+    # -----------------------------------------------
+    # DQ7 - Timeliness
+    # -----------------------------------------------
+    - id: DQ7
+      name: timeliness
+      description: Check whether data is available within expected time
+      category: timeliness
+      level: dataset
+      enabled: true
+      default_weight: 7
+
+      threshold:
+        metric: latency_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ8 - Conformity
+    # -----------------------------------------------
+    - id: DQ8
+      name: conformity
+      description: Validate data against organizational standards
+      category: conformity
+      level: column
+      enabled: true
+      default_weight: 5
+
+      threshold:
+        metric: non_conforming_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ9 - Range
+    # -----------------------------------------------
+    - id: DQ9
+      name: range
+      description: Validate numeric values within expected ranges
+      category: range
+      level: column
+      enabled: true
+      default_weight: 5
+
+      threshold:
+        metric: out_of_range_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ10 - Duplicate
+    # -----------------------------------------------
+    - id: DQ10
+      name: duplicate
+      description: Identify duplicate records or duplicate business keys
+      category: duplicate
+      level: dataset
+      enabled: true
+      default_weight: 7
+
+      threshold:
+        metric: duplicate_percentage
+        pass: 0
+        warning: 2
+        fail: 5
+
+    # -----------------------------------------------
+    # DQ11 - Null
+    # -----------------------------------------------
+    - id: DQ11
+      name: "null"
+      description: Identify unexpected null values
+      category: null_check
+      level: column
+      enabled: true
+      default_weight: 8
+
+      threshold:
+        metric: null_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ12 - Length
+    # -----------------------------------------------
+    - id: DQ12
+      name: length
+      description: Validate text field length
+      category: length
+      level: column
+      enabled: true
+      default_weight: 4
+
+      threshold:
+        metric: invalid_length_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+        max_length: 1000
+
+    # -----------------------------------------------
+    # DQ13 - Data Type
+    # -----------------------------------------------
+    - id: DQ13
+      name: data_type
+      description: Validate expected data types
+      category: data_type
+      level: column
+      enabled: true
+      default_weight: 6
+
+      threshold:
+        metric: type_mismatch_percentage
+        pass: 0
+        warning: 2
+        fail: 5
+
+    # -----------------------------------------------
+    # DQ14 - Pattern
+    # -----------------------------------------------
+    - id: DQ14
+      name: pattern
+      description: Validate values against regular expression patterns
+      category: pattern
+      level: column
+      enabled: true
+      default_weight: 5
+
+      threshold:
+        metric: pattern_failure_percentage
+        pass: 0
+        warning: 5
+        fail: 10
+
+    # -----------------------------------------------
+    # DQ15 - Business Rule
+    # -----------------------------------------------
+    - id: DQ15
+      name: business_rule
+      description: Validate business-specific rules
+      category: business_rule
+      level: dataset
+      enabled: true
+      default_weight: 9
+
+      threshold:
+        metric: business_rule_violation_percentage
+        pass: 0
+        warning: 2
+        fail: 5
+
+    # -----------------------------------------------
+    # DQ16 - Volume
+    # -----------------------------------------------
+    - id: DQ16
+      name: volume
+      description: Detect unexpected changes in record volume
+      category: volume
+      level: dataset
+      enabled: true
+      default_weight: 5
+
+      threshold:
+        metric: volume_change_percentage
+        pass: 0
+        warning: 10
+        fail: 15
