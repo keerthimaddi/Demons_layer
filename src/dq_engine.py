@@ -325,6 +325,10 @@ def check_validity(
 # DQ4 - UNIQUENESS
 # ============================================================
 
+# ============================================================
+# DQ4 - UNIQUENESS
+# ============================================================
+
 def check_uniqueness(
     df,
     threshold
@@ -332,11 +336,21 @@ def check_uniqueness(
     """
     DQ4 - Uniqueness
 
+    Checks whether candidate ID/key columns contain
+    duplicate non-null values.
+
+    Candidate columns:
+        - columns containing 'id'
+        - columns containing 'key'
+
+    Important:
+        - NULL values are not treated as duplicates.
+        - Only actual repeated non-null values are counted.
+        - The duplicate percentage is calculated against
+          non-null values only.
+
     Metric:
         duplicate_percentage
-
-    Candidate business keys:
-        columns containing 'id' or 'key'
     """
 
     try:
@@ -346,30 +360,57 @@ def check_uniqueness(
         if total_rows == 0:
             return "FAIL"
 
+        # ----------------------------------------------------
+        # Identify candidate key columns
+        # ----------------------------------------------------
+
         candidate_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if (
-                    "id" in c.lower()
-                    or "key" in c.lower()
+                "id" in c.lower()
+                or "key" in c.lower()
             )
         ]
 
         print(
-            f"DQ4 candidate uniqueness columns: {candidate_columns}"
+            f"DQ4 candidate uniqueness columns: "
+            f"{candidate_columns}"
         )
+
+        # ----------------------------------------------------
+        # No candidate key found
+        # ----------------------------------------------------
 
         if not candidate_columns:
             return "PASS"
 
-        duplicate_records = 0
+        total_duplicate_records = 0
+        total_non_null_records = 0
+
+        # ----------------------------------------------------
+        # Check each candidate column
+        # ----------------------------------------------------
 
         for column_name in candidate_columns:
 
+            # Ignore NULL values for uniqueness testing
             non_null_df = df.filter(
                 col(column_name).isNotNull()
             )
 
-            duplicate_rows = (
+            non_null_count = (
+                non_null_df.count()
+            )
+
+            if non_null_count == 0:
+                continue
+
+            # ------------------------------------------------
+            # Find values occurring more than once
+            # ------------------------------------------------
+
+            duplicate_groups = (
                 non_null_df
                 .groupBy(column_name)
                 .count()
@@ -378,44 +419,65 @@ def check_uniqueness(
                 )
             )
 
+            # ------------------------------------------------
+            # Count rows belonging to duplicate groups
+            # ------------------------------------------------
+
             duplicate_count = (
-                duplicate_rows
+                duplicate_groups
                 .selectExpr(
-                    "coalesce(sum(count), 0) as total"
+                    "coalesce(sum(count), 0) "
+                    "as duplicate_count"
                 )
-                .collect()[0]["total"]
+                .collect()[0]["duplicate_count"]
             )
 
             if duplicate_count is None:
                 duplicate_count = 0
 
-            null_count = (
-                df.filter(
-                    col(column_name).isNull()
-                ).count()
-            )
-
-            duplicate_records += (
+            total_duplicate_records += (
                 duplicate_count
-                + null_count
             )
 
-        total_possible = (
-            total_rows
-            * len(candidate_columns)
+            total_non_null_records += (
+                non_null_count
+            )
+
+        # ----------------------------------------------------
+        # No values available for uniqueness testing
+        # ----------------------------------------------------
+
+        if total_non_null_records == 0:
+            return "PASS"
+
+        # ----------------------------------------------------
+        # Calculate duplicate percentage
+        # ----------------------------------------------------
+
+        duplicate_percentage = calculate_percentage(
+            total_duplicate_records,
+            total_non_null_records
         )
 
-        failure_percentage = calculate_percentage(
-            duplicate_records,
-            total_possible
+        print(
+            f"DQ4 duplicate percentage: "
+            f"{duplicate_percentage:.2f}%"
         )
+
+        # ----------------------------------------------------
+        # Convert percentage to PASS/WARNING/FAIL
+        # ----------------------------------------------------
 
         return get_status(
-            failure_percentage,
+            duplicate_percentage,
             threshold
         )
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"DQ4 uniqueness check failed: {e}"
+        )
 
         return "FAIL"
 
