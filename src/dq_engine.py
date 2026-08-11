@@ -1,10 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
-    count,
     isnan,
-    when,
-    sum as spark_sum,
     current_timestamp
 )
 
@@ -24,19 +21,53 @@ def get_table(spark, catalog, schema, table):
 
 
 # ============================================================
+# Helper - Status Based on Percentage
+# ============================================================
+
+def get_status(
+    percentage,
+    pass_threshold,
+    warning_threshold
+):
+    """
+    Convert a percentage into PASS / WARNING / FAIL.
+
+    Example:
+        >= 95  -> PASS
+        >= 80  -> WARNING
+        < 80   -> FAIL
+    """
+
+    if percentage >= pass_threshold:
+        return "PASS"
+
+    elif percentage >= warning_threshold:
+        return "WARNING"
+
+    else:
+        return "FAIL"
+
+
+# ============================================================
 # DQ1 - Completeness
 # ============================================================
 
-def check_completeness(df):
+def check_completeness(
+    df,
+    pass_threshold=95,
+    warning_threshold=80
+):
     """
     DQ1:
-    Checks whether the dataset has meaningful data
-    and whether columns are sufficiently populated.
+    Checks overall percentage of populated cells.
 
-    PASS = at least 95% of values are populated.
+    PASS    >= pass_threshold
+    WARNING >= warning_threshold
+    FAIL    < warning_threshold
     """
 
     try:
+
         total_rows = df.count()
 
         if total_rows == 0:
@@ -64,10 +95,10 @@ def check_completeness(df):
             / total_cells
         ) * 100
 
-        return (
-            "PASS"
-            if completeness_percentage >= 95
-            else "FAIL"
+        return get_status(
+            completeness_percentage,
+            pass_threshold,
+            warning_threshold
         )
 
     except Exception:
@@ -95,7 +126,7 @@ def check_accuracy(df):
             in [
                 "double",
                 "float",
-                "decimal",
+                "decimal"
             ]
         ]
 
@@ -151,9 +182,6 @@ def check_uniqueness(df):
     """
     DQ4:
     Checks uniqueness of likely business key columns.
-
-    Looks for columns containing:
-    id / key
     """
 
     try:
@@ -209,17 +237,10 @@ def check_consistency(df):
     Examples:
     start date <= end date
     quantity >= 0
-    amount >= 0
     """
 
     try:
 
-        columns_lower = {
-            c.lower(): c
-            for c in df.columns
-        }
-
-        # Start / End date consistency
         start_columns = [
             c for c in df.columns
             if "start" in c.lower()
@@ -244,11 +265,12 @@ def check_consistency(df):
             if invalid > 0:
                 return "FAIL"
 
-        # Quantity should not be negative
         quantity_columns = [
             c for c in df.columns
-            if "quantity" in c.lower()
-            or "qty" in c.lower()
+            if (
+                "quantity" in c.lower()
+                or "qty" in c.lower()
+            )
         ]
 
         for column_name in quantity_columns:
@@ -277,7 +299,7 @@ def check_integrity(df):
     DQ6:
     Basic referential/integrity validation.
 
-    Checks that ID/key columns are not null.
+    Checks ID/key columns are not null.
     """
 
     try:
@@ -354,8 +376,6 @@ def check_timeliness(df):
 def check_conformity(df):
     """
     DQ8:
-    Basic organizational conformity check.
-
     Checks that column names do not contain spaces.
     """
 
@@ -379,8 +399,8 @@ def check_conformity(df):
 def check_range(df):
     """
     DQ9:
-    Checks numeric values for unreasonable negative values
-    in common business metrics.
+    Checks common numeric business metrics
+    for negative values.
     """
 
     try:
@@ -466,11 +486,7 @@ def check_duplicate(df):
 def check_null(df):
     """
     DQ11:
-    Checks for unexpected null values.
-
-    This is intentionally separate from DQ1:
-    DQ1 measures overall completeness percentage.
-    DQ11 identifies whether nulls exist at all.
+    Checks whether any null values exist.
     """
 
     try:
@@ -500,9 +516,6 @@ def check_length(df):
     """
     DQ12:
     Checks excessive text length.
-
-    A generic upper limit of 1000 characters is used
-    until column-specific configuration is added.
     """
 
     try:
@@ -517,9 +530,9 @@ def check_length(df):
 
             invalid_count = (
                 df.filter(
-                    col(column_name).cast("string").substr(
-                        1001, 1
-                    ) != ""
+                    col(column_name)
+                    .cast("string")
+                    .substr(1001, 1) != ""
                 ).count()
             )
 
@@ -539,7 +552,8 @@ def check_length(df):
 def check_data_type(df):
     """
     DQ13:
-    Checks that all columns have identifiable Spark data types.
+    Checks that all columns have identifiable
+    Spark data types.
     """
 
     try:
@@ -562,7 +576,7 @@ def check_data_type(df):
 def check_pattern(df):
     """
     DQ14:
-    Basic pattern validation for likely email columns.
+    Basic pattern validation for email columns.
     """
 
     try:
@@ -597,10 +611,7 @@ def check_pattern(df):
 def check_business_rule(df):
     """
     DQ15:
-    Basic business-rule validation.
-
-    Common business columns should not contain
-    negative values.
+    Checks common business metrics for negative values.
     """
 
     try:
@@ -644,9 +655,6 @@ def check_volume(df):
     """
     DQ16:
     Checks whether the table contains records.
-
-    Later this will be upgraded to compare against
-    historical volume thresholds.
     """
 
     try:
@@ -675,14 +683,17 @@ def run_dq_checks(
     rules
 ):
     """
-    Execute all enabled DQ rules and calculate
-    weighted DQ score.
+    Execute all enabled DQ rules.
 
-    Formula:
+    Weighted score:
 
-        Total Score =
-        (Sum of weights of passed rules /
-         Sum of weights of enabled rules) * 100
+        PASS    = 100% of rule weight
+        WARNING = 50% of rule weight
+        FAIL    = 0% of rule weight
+
+    Total Score =
+        Weighted earned score /
+        Total enabled weight * 100
     """
 
     full_table_name = (
@@ -711,43 +722,71 @@ def run_dq_checks(
         }
 
     # --------------------------------------------------------
-    # Execute checks
+    # Read threshold configuration
     # --------------------------------------------------------
 
-    dq_results = {
+    threshold_config = {}
 
-        "DQ1": check_completeness(df),
+    for rule in rules:
 
-        "DQ2": check_accuracy(df),
+        rule_id = rule["id"]
 
-        "DQ3": check_validity(df),
+        threshold_config[rule_id] = {
+            "pass": float(
+                rule.get(
+                    "pass_threshold",
+                    95
+                )
+            ),
+            "warning": float(
+                rule.get(
+                    "warning_threshold",
+                    80
+                )
+            )
+        }
 
-        "DQ4": check_uniqueness(df),
+    # --------------------------------------------------------
+    # Execute all DQ checks
+    # --------------------------------------------------------
 
-        "DQ5": check_consistency(df),
+    dq_results = {}
 
-        "DQ6": check_integrity(df),
+    dq_results["DQ1"] = check_completeness(
+        df,
+        threshold_config["DQ1"]["pass"],
+        threshold_config["DQ1"]["warning"]
+    )
 
-        "DQ7": check_timeliness(df),
+    dq_results["DQ2"] = check_accuracy(df)
 
-        "DQ8": check_conformity(df),
+    dq_results["DQ3"] = check_validity(df)
 
-        "DQ9": check_range(df),
+    dq_results["DQ4"] = check_uniqueness(df)
 
-        "DQ10": check_duplicate(df),
+    dq_results["DQ5"] = check_consistency(df)
 
-        "DQ11": check_null(df),
+    dq_results["DQ6"] = check_integrity(df)
 
-        "DQ12": check_length(df),
+    dq_results["DQ7"] = check_timeliness(df)
 
-        "DQ13": check_data_type(df),
+    dq_results["DQ8"] = check_conformity(df)
 
-        "DQ14": check_pattern(df),
+    dq_results["DQ9"] = check_range(df)
 
-        "DQ15": check_business_rule(df),
+    dq_results["DQ10"] = check_duplicate(df)
 
-        "DQ16": check_volume(df)
-    }
+    dq_results["DQ11"] = check_null(df)
+
+    dq_results["DQ12"] = check_length(df)
+
+    dq_results["DQ13"] = check_data_type(df)
+
+    dq_results["DQ14"] = check_pattern(df)
+
+    dq_results["DQ15"] = check_business_rule(df)
+
+    dq_results["DQ16"] = check_volume(df)
 
     # --------------------------------------------------------
     # Weighted score
@@ -760,28 +799,57 @@ def run_dq_checks(
     ]
 
     total_enabled_weight = sum(
-        float(rule.get("default_weight", 0))
+        float(
+            rule.get(
+                "default_weight",
+                0
+            )
+        )
         for rule in enabled_rules
     )
 
-    passed_weight = 0.0
+    earned_weight = 0.0
 
     for rule in enabled_rules:
 
         rule_id = rule["id"]
 
         weight = float(
-            rule.get("default_weight", 0)
+            rule.get(
+                "default_weight",
+                0
+            )
         )
 
-        if dq_results.get(rule_id) == "PASS":
-            passed_weight += weight
+        status = dq_results.get(
+            rule_id,
+            "FAIL"
+        )
+
+        if status == "PASS":
+
+            # Full weight
+            earned_weight += weight
+
+        elif status == "WARNING":
+
+            # Half weight
+            earned_weight += weight * 0.5
+
+        elif status == "FAIL":
+
+            # Zero weight
+            earned_weight += 0
+
+    # --------------------------------------------------------
+    # Calculate total score
+    # --------------------------------------------------------
 
     if total_enabled_weight > 0:
 
         total_score = round(
             (
-                passed_weight
+                earned_weight
                 / total_enabled_weight
             ) * 100,
             2
