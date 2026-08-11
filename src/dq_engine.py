@@ -1,5 +1,12 @@
-from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, count, isnan, when
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import (
+    col,
+    count,
+    isnan,
+    when,
+    sum as spark_sum,
+    current_timestamp
+)
 
 
 # ============================================================
@@ -8,8 +15,7 @@ from pyspark.sql.functions import col, count, isnan, when
 
 def get_table(spark, catalog, schema, table):
     """
-    Load a Unity Catalog table using:
-    catalog.schema.table
+    Return the Spark DataFrame for a Unity Catalog table.
     """
 
     full_table_name = f"`{catalog}`.`{schema}`.`{table}`"
@@ -21,31 +27,48 @@ def get_table(spark, catalog, schema, table):
 # DQ1 - Completeness
 # ============================================================
 
-def check_completeness(df: DataFrame):
+def check_completeness(df):
     """
     DQ1:
-    Check whether columns contain null values.
+    Checks whether the dataset has meaningful data
+    and whether columns are sufficiently populated.
+
+    PASS = at least 95% of values are populated.
     """
 
     try:
-
         total_rows = df.count()
 
         if total_rows == 0:
             return "FAIL"
 
+        total_cells = total_rows * len(df.columns)
+
+        if total_cells == 0:
+            return "FAIL"
+
+        null_cells = 0
+
         for column_name in df.columns:
 
             null_count = (
-                df.filter(col(column_name).isNull())
-                .limit(1)
-                .count()
+                df.filter(
+                    col(column_name).isNull()
+                ).count()
             )
 
-            if null_count > 0:
-                return "FAIL"
+            null_cells += null_count
 
-        return "PASS"
+        completeness_percentage = (
+            (total_cells - null_cells)
+            / total_cells
+        ) * 100
+
+        return (
+            "PASS"
+            if completeness_percentage >= 95
+            else "FAIL"
+        )
 
     except Exception:
         return "FAIL"
@@ -55,13 +78,12 @@ def check_completeness(df: DataFrame):
 # DQ2 - Accuracy
 # ============================================================
 
-def check_accuracy(df: DataFrame):
+def check_accuracy(df):
     """
     DQ2:
     Basic accuracy validation.
 
-    Current generic implementation checks that
-    numeric columns do not contain NaN values.
+    Checks numeric columns for NaN values.
     """
 
     try:
@@ -70,15 +92,19 @@ def check_accuracy(df: DataFrame):
             field.name
             for field in df.schema.fields
             if field.dataType.simpleString()
-            in ["double", "float"]
+            in [
+                "double",
+                "float",
+                "decimal",
+            ]
         ]
 
         for column_name in numeric_columns:
 
             invalid_count = (
-                df.filter(isnan(col(column_name)))
-                .limit(1)
-                .count()
+                df.filter(
+                    isnan(col(column_name))
+                ).count()
             )
 
             if invalid_count > 0:
@@ -94,17 +120,22 @@ def check_accuracy(df: DataFrame):
 # DQ3 - Validity
 # ============================================================
 
-def check_validity(df: DataFrame):
+def check_validity(df):
     """
     DQ3:
-    Validate that the dataset can be read and contains
-    supported values/types.
+    Checks whether the dataset contains valid
+    Spark-supported data types and columns.
     """
 
     try:
 
-        if len(df.schema.fields) == 0:
+        if len(df.columns) == 0:
             return "FAIL"
+
+        for field in df.schema.fields:
+
+            if field.dataType is None:
+                return "FAIL"
 
         return "PASS"
 
@@ -116,21 +147,51 @@ def check_validity(df: DataFrame):
 # DQ4 - Uniqueness
 # ============================================================
 
-def check_uniqueness(df: DataFrame):
+def check_uniqueness(df):
     """
     DQ4:
-    Check whether duplicate complete records exist.
+    Checks uniqueness of likely business key columns.
+
+    Looks for columns containing:
+    id / key
     """
 
     try:
 
-        total_count = df.count()
-        distinct_count = df.distinct().count()
+        candidate_columns = [
+            c for c in df.columns
+            if (
+                "id" in c.lower()
+                or "key" in c.lower()
+            )
+        ]
 
-        if total_count == distinct_count:
+        if not candidate_columns:
             return "PASS"
 
-        return "FAIL"
+        for column_name in candidate_columns:
+
+            total_count = df.count()
+
+            distinct_count = (
+                df.select(column_name)
+                .distinct()
+                .count()
+            )
+
+            null_count = (
+                df.filter(
+                    col(column_name).isNull()
+                ).count()
+            )
+
+            if (
+                total_count != distinct_count
+                or null_count > 0
+            ):
+                return "FAIL"
+
+        return "PASS"
 
     except Exception:
         return "FAIL"
@@ -140,18 +201,66 @@ def check_uniqueness(df: DataFrame):
 # DQ5 - Consistency
 # ============================================================
 
-def check_consistency(df: DataFrame):
+def check_consistency(df):
     """
     DQ5:
-    Basic dataset consistency check.
+    Basic cross-column consistency checks.
 
-    Ensures the dataset has a valid schema and columns.
+    Examples:
+    start date <= end date
+    quantity >= 0
+    amount >= 0
     """
 
     try:
 
-        if len(df.columns) == 0:
-            return "FAIL"
+        columns_lower = {
+            c.lower(): c
+            for c in df.columns
+        }
+
+        # Start / End date consistency
+        start_columns = [
+            c for c in df.columns
+            if "start" in c.lower()
+        ]
+
+        end_columns = [
+            c for c in df.columns
+            if "end" in c.lower()
+        ]
+
+        if start_columns and end_columns:
+
+            start_col = start_columns[0]
+            end_col = end_columns[0]
+
+            invalid = (
+                df.filter(
+                    col(start_col) > col(end_col)
+                ).count()
+            )
+
+            if invalid > 0:
+                return "FAIL"
+
+        # Quantity should not be negative
+        quantity_columns = [
+            c for c in df.columns
+            if "quantity" in c.lower()
+            or "qty" in c.lower()
+        ]
+
+        for column_name in quantity_columns:
+
+            invalid = (
+                df.filter(
+                    col(column_name) < 0
+                ).count()
+            )
+
+            if invalid > 0:
+                return "FAIL"
 
         return "PASS"
 
@@ -163,19 +272,34 @@ def check_consistency(df: DataFrame):
 # DQ6 - Integrity
 # ============================================================
 
-def check_integrity(df: DataFrame):
+def check_integrity(df):
     """
     DQ6:
-    Basic structural integrity check.
+    Basic referential/integrity validation.
 
-    Detailed referential integrity can later be configured
-    between multiple tables.
+    Checks that ID/key columns are not null.
     """
 
     try:
 
-        if len(df.schema.fields) == 0:
-            return "FAIL"
+        key_columns = [
+            c for c in df.columns
+            if (
+                "id" in c.lower()
+                or "key" in c.lower()
+            )
+        ]
+
+        for column_name in key_columns:
+
+            null_count = (
+                df.filter(
+                    col(column_name).isNull()
+                ).count()
+            )
+
+            if null_count > 0:
+                return "FAIL"
 
         return "PASS"
 
@@ -187,48 +311,59 @@ def check_integrity(df: DataFrame):
 # DQ7 - Timeliness
 # ============================================================
 
-def check_timeliness(df: DataFrame):
+def check_timeliness(df):
     """
     DQ7:
-    Basic timeliness check.
-
-    Detailed SLA-based validation will require a configured
-    timestamp column and expected freshness threshold.
+    Checks whether date/timestamp columns contain
+    future values.
     """
 
     try:
 
-        timestamp_columns = [
+        date_columns = [
             field.name
             for field in df.schema.fields
-            if field.dataType.simpleString() == "timestamp"
+            if (
+                "date" in field.name.lower()
+                or "time" in field.name.lower()
+                or "timestamp" in field.name.lower()
+            )
         ]
 
-        if timestamp_columns:
-            return "PASS"
+        for column_name in date_columns:
 
-        # Generic tables may not contain timestamps.
+            future_count = (
+                df.filter(
+                    col(column_name) > current_timestamp()
+                ).count()
+            )
+
+            if future_count > 0:
+                return "FAIL"
+
         return "PASS"
 
     except Exception:
-        return "FAIL"
+        return "PASS"
 
 
 # ============================================================
 # DQ8 - Conformity
 # ============================================================
 
-def check_conformity(df: DataFrame):
+def check_conformity(df):
     """
     DQ8:
-    Check that the table contains valid column definitions.
+    Basic organizational conformity check.
+
+    Checks that column names do not contain spaces.
     """
 
     try:
 
-        for field in df.schema.fields:
+        for column_name in df.columns:
 
-            if not field.name or not field.name.strip():
+            if " " in column_name:
                 return "FAIL"
 
         return "PASS"
@@ -241,13 +376,11 @@ def check_conformity(df: DataFrame):
 # DQ9 - Range
 # ============================================================
 
-def check_range(df: DataFrame):
+def check_range(df):
     """
     DQ9:
-    Generic numeric range validation.
-
-    Negative values are currently treated as invalid.
-    This can later be configured per column in YAML.
+    Checks numeric values for unreasonable negative values
+    in common business metrics.
     """
 
     try:
@@ -257,25 +390,41 @@ def check_range(df: DataFrame):
             for field in df.schema.fields
             if field.dataType.simpleString()
             in [
-                "integer",
+                "int",
                 "bigint",
-                "long",
                 "double",
                 "float",
-                "decimal"
+                "decimal",
+                "long",
+                "short"
             ]
         ]
 
         for column_name in numeric_columns:
 
-            invalid_count = (
-                df.filter(col(column_name) < 0)
-                .limit(1)
-                .count()
-            )
+            column_lower = column_name.lower()
 
-            if invalid_count > 0:
-                return "FAIL"
+            if any(
+                keyword in column_lower
+                for keyword in [
+                    "amount",
+                    "revenue",
+                    "price",
+                    "cost",
+                    "spend",
+                    "quantity",
+                    "count"
+                ]
+            ):
+
+                negative_count = (
+                    df.filter(
+                        col(column_name) < 0
+                    ).count()
+                )
+
+                if negative_count > 0:
+                    return "FAIL"
 
         return "PASS"
 
@@ -287,21 +436,24 @@ def check_range(df: DataFrame):
 # DQ10 - Duplicate
 # ============================================================
 
-def check_duplicate(df: DataFrame):
+def check_duplicate(df):
     """
     DQ10:
-    Check for duplicate complete records.
+    Checks for complete duplicate rows.
     """
 
     try:
 
         total_count = df.count()
-        distinct_count = df.distinct().count()
 
-        if total_count == distinct_count:
-            return "PASS"
+        distinct_count = (
+            df.distinct().count()
+        )
 
-        return "FAIL"
+        if total_count != distinct_count:
+            return "FAIL"
+
+        return "PASS"
 
     except Exception:
         return "FAIL"
@@ -311,23 +463,27 @@ def check_duplicate(df: DataFrame):
 # DQ11 - Null
 # ============================================================
 
-def check_null(df: DataFrame):
+def check_null(df):
     """
     DQ11:
-    Detect unexpected null values.
+    Checks for unexpected null values.
+
+    This is intentionally separate from DQ1:
+    DQ1 measures overall completeness percentage.
+    DQ11 identifies whether nulls exist at all.
     """
 
     try:
 
         for column_name in df.columns:
 
-            null_exists = (
-                df.filter(col(column_name).isNull())
-                .limit(1)
-                .count()
+            null_count = (
+                df.filter(
+                    col(column_name).isNull()
+                ).count()
             )
 
-            if null_exists > 0:
+            if null_count > 0:
                 return "FAIL"
 
         return "PASS"
@@ -340,10 +496,13 @@ def check_null(df: DataFrame):
 # DQ12 - Length
 # ============================================================
 
-def check_length(df: DataFrame):
+def check_length(df):
     """
     DQ12:
-    Basic string length validation.
+    Checks excessive text length.
+
+    A generic upper limit of 1000 characters is used
+    until column-specific configuration is added.
     """
 
     try:
@@ -358,11 +517,10 @@ def check_length(df: DataFrame):
 
             invalid_count = (
                 df.filter(
-                    (col(column_name).isNotNull()) &
-                    (col(column_name) == "")
-                )
-                .limit(1)
-                .count()
+                    col(column_name).cast("string").substr(
+                        1001, 1
+                    ) != ""
+                ).count()
             )
 
             if invalid_count > 0:
@@ -381,7 +539,7 @@ def check_length(df: DataFrame):
 def check_data_type(df):
     """
     DQ13:
-    Verify that the Spark schema can be successfully read.
+    Checks that all columns have identifiable Spark data types.
     """
 
     try:
@@ -404,16 +562,26 @@ def check_data_type(df):
 def check_pattern(df):
     """
     DQ14:
-    Generic pattern validation.
-
-    Detailed regex rules will later be configured in YAML.
+    Basic pattern validation for likely email columns.
     """
 
     try:
 
-        for field in df.schema.fields:
+        email_columns = [
+            c for c in df.columns
+            if "email" in c.lower()
+        ]
 
-            if field.name is None:
+        for column_name in email_columns:
+
+            invalid_count = (
+                df.filter(
+                    col(column_name).isNotNull()
+                    & ~col(column_name).contains("@")
+                ).count()
+            )
+
+            if invalid_count > 0:
                 return "FAIL"
 
         return "PASS"
@@ -429,16 +597,38 @@ def check_pattern(df):
 def check_business_rule(df):
     """
     DQ15:
-    Generic business rule validation.
+    Basic business-rule validation.
 
-    Specific business rules will later be configured
-    per dataset/column.
+    Common business columns should not contain
+    negative values.
     """
 
     try:
 
-        if len(df.columns) == 0:
-            return "FAIL"
+        business_columns = [
+            c for c in df.columns
+            if any(
+                keyword in c.lower()
+                for keyword in [
+                    "amount",
+                    "revenue",
+                    "spend",
+                    "cost",
+                    "price"
+                ]
+            )
+        ]
+
+        for column_name in business_columns:
+
+            invalid_count = (
+                df.filter(
+                    col(column_name) < 0
+                ).count()
+            )
+
+            if invalid_count > 0:
+                return "FAIL"
 
         return "PASS"
 
@@ -453,66 +643,59 @@ def check_business_rule(df):
 def check_volume(df):
     """
     DQ16:
-    Check whether the table contains records.
+    Checks whether the table contains records.
+
+    Later this will be upgraded to compare against
+    historical volume thresholds.
     """
 
     try:
 
         row_count = df.count()
 
-        if row_count > 0:
-            return "PASS"
-
-        return "FAIL"
+        return (
+            "PASS"
+            if row_count > 0
+            else "FAIL"
+        )
 
     except Exception:
         return "FAIL"
 
 
 # ============================================================
-# DQ FUNCTION REGISTRY
+# MAIN DQ ENGINE
 # ============================================================
 
-DQ_FUNCTIONS = {
-
-    "completeness": check_completeness,
-    "accuracy": check_accuracy,
-    "validity": check_validity,
-    "uniqueness": check_uniqueness,
-    "consistency": check_consistency,
-    "integrity": check_integrity,
-    "timeliness": check_timeliness,
-    "conformity": check_conformity,
-    "range": check_range,
-    "duplicate": check_duplicate,
-    "null_check": check_null,
-    "length": check_length,
-    "data_type": check_data_type,
-    "pattern": check_pattern,
-    "business_rule": check_business_rule,
-    "volume": check_volume
-}
-
-
-# ============================================================
-# RUN DQ CHECKS FOR ONE TABLE
-# ============================================================
-
-def run_dq_checks(spark, catalog, schema, table, rules):
+def run_dq_checks(
+    spark,
+    catalog,
+    schema,
+    table,
+    rules
+):
     """
-    Execute the enabled DQ checks for one Catalog.Schema.Table.
+    Execute all enabled DQ rules and calculate
+    weighted DQ score.
 
-    Rules are supplied by rule_loader.py.
+    Formula:
+
+        Total Score =
+        (Sum of weights of passed rules /
+         Sum of weights of enabled rules) * 100
     """
+
+    full_table_name = (
+        f"`{catalog}`.`{schema}`.`{table}`"
+    )
+
+    # --------------------------------------------------------
+    # Load table
+    # --------------------------------------------------------
 
     try:
 
-        df = get_table(
-            spark,
-            catalog,
-            schema,
-            table
-        )
+        df = spark.table(full_table_name)
 
     except Exception:
 
@@ -520,62 +703,87 @@ def run_dq_checks(spark, catalog, schema, table, rules):
             "catalog": catalog,
             "schema": schema,
             "table": table,
-            "DQ1": "FAIL",
-            "DQ2": "FAIL",
-            "DQ3": "FAIL",
-            "DQ4": "FAIL",
-            "DQ5": "FAIL",
-            "DQ6": "FAIL",
-            "DQ7": "FAIL",
-            "DQ8": "FAIL",
-            "DQ9": "FAIL",
-            "DQ10": "FAIL",
-            "DQ11": "FAIL",
-            "DQ12": "FAIL",
-            "DQ13": "FAIL",
-            "DQ14": "FAIL",
-            "DQ15": "FAIL",
-            "DQ16": "FAIL",
+            **{
+                f"DQ{i}": "FAIL"
+                for i in range(1, 17)
+            },
             "Total Score": 0.0
         }
 
-    results = {}
+    # --------------------------------------------------------
+    # Execute checks
+    # --------------------------------------------------------
 
-    weighted_score = 0.0
-    total_weight = 0.0
+    dq_results = {
 
-    for rule in rules:
+        "DQ1": check_completeness(df),
+
+        "DQ2": check_accuracy(df),
+
+        "DQ3": check_validity(df),
+
+        "DQ4": check_uniqueness(df),
+
+        "DQ5": check_consistency(df),
+
+        "DQ6": check_integrity(df),
+
+        "DQ7": check_timeliness(df),
+
+        "DQ8": check_conformity(df),
+
+        "DQ9": check_range(df),
+
+        "DQ10": check_duplicate(df),
+
+        "DQ11": check_null(df),
+
+        "DQ12": check_length(df),
+
+        "DQ13": check_data_type(df),
+
+        "DQ14": check_pattern(df),
+
+        "DQ15": check_business_rule(df),
+
+        "DQ16": check_volume(df)
+    }
+
+    # --------------------------------------------------------
+    # Weighted score
+    # --------------------------------------------------------
+
+    enabled_rules = [
+        rule
+        for rule in rules
+        if rule.get("enabled", False)
+    ]
+
+    total_enabled_weight = sum(
+        float(rule.get("default_weight", 0))
+        for rule in enabled_rules
+    )
+
+    passed_weight = 0.0
+
+    for rule in enabled_rules:
 
         rule_id = rule["id"]
-        category = rule["category"]
-        enabled = rule["enabled"]
-        weight = float(rule["default_weight"])
 
-        if not enabled:
-            results[rule_id] = "SKIP"
-            continue
+        weight = float(
+            rule.get("default_weight", 0)
+        )
 
-        check_function = DQ_FUNCTIONS.get(category)
+        if dq_results.get(rule_id) == "PASS":
+            passed_weight += weight
 
-        if check_function is None:
-
-            results[rule_id] = "FAIL"
-
-            continue
-
-        result = check_function(df)
-
-        results[rule_id] = result
-
-        total_weight += weight
-
-        if result == "PASS":
-            weighted_score += weight
-
-    if total_weight > 0:
+    if total_enabled_weight > 0:
 
         total_score = round(
-            (weighted_score / total_weight) * 100,
+            (
+                passed_weight
+                / total_enabled_weight
+            ) * 100,
             2
         )
 
@@ -583,9 +791,18 @@ def run_dq_checks(spark, catalog, schema, table, rules):
 
         total_score = 0.0
 
-    results["catalog"] = catalog
-    results["schema"] = schema
-    results["table"] = table
-    results["Total Score"] = total_score
+    # --------------------------------------------------------
+    # Final result
+    # --------------------------------------------------------
 
-    return results
+    result = {
+        "catalog": catalog,
+        "schema": schema,
+        "table": table
+    }
+
+    result.update(dq_results)
+
+    result["Total Score"] = total_score
+
+    return result
