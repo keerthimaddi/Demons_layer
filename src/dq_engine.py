@@ -1,4 +1,3 @@
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col,
     isnan,
@@ -7,63 +6,162 @@ from pyspark.sql.functions import (
 
 
 # ============================================================
-# Helper
+# HELPER - LOAD TABLE
 # ============================================================
 
-def get_table(spark, catalog, schema, table):
+def get_table(
+    spark,
+    catalog,
+    schema,
+    table
+):
     """
     Return the Spark DataFrame for a Unity Catalog table.
     """
 
-    full_table_name = f"`{catalog}`.`{schema}`.`{table}`"
+    full_table_name = (
+        f"`{catalog}`.`{schema}`.`{table}`"
+    )
 
     return spark.table(full_table_name)
 
 
 # ============================================================
-# Helper - Status Based on Percentage
+# HELPER - SAFE PERCENTAGE
+# ============================================================
+
+def calculate_percentage(
+    invalid_count,
+    total_count
+):
+    """
+    Calculate percentage.
+
+    Returns 0 when denominator is zero.
+    """
+
+    if total_count == 0:
+        return 0.0
+
+    return (
+        float(invalid_count)
+        / float(total_count)
+    ) * 100.0
+
+
+# ============================================================
+# HELPER - STATUS FROM YAML THRESHOLD
 # ============================================================
 
 def get_status(
-    percentage,
-    pass_threshold,
-    warning_threshold
+    failure_percentage,
+    threshold
 ):
     """
-    Convert a percentage into PASS / WARNING / FAIL.
+    Convert failure percentage into:
+
+        PASS
+        WARNING
+        FAIL
+
+    using the YAML threshold.
 
     Example:
-        >= 95  -> PASS
-        >= 80  -> WARNING
-        < 80   -> FAIL
+
+        pass: 0
+        warning: 5
+        fail: 10
+
+    Result:
+
+        <= 0%       PASS
+        >0 - 5%     WARNING
+        >5%         FAIL
+
+    The configured 'fail' threshold is retained as the
+    hard-fail boundary. Values above it are also FAIL.
     """
 
-    if percentage >= pass_threshold:
-        return "PASS"
+    try:
 
-    elif percentage >= warning_threshold:
-        return "WARNING"
+        pass_threshold = float(
+            threshold.get(
+                "pass",
+                0
+            )
+        )
 
-    else:
+        warning_threshold = float(
+            threshold.get(
+                "warning",
+                5
+            )
+        )
+
+        fail_threshold = float(
+            threshold.get(
+                "fail",
+                10
+            )
+        )
+
+        if failure_percentage <= pass_threshold:
+
+            return "PASS"
+
+        elif failure_percentage <= warning_threshold:
+
+            return "WARNING"
+
+        elif failure_percentage <= fail_threshold:
+
+            return "FAIL"
+
+        else:
+
+            return "FAIL"
+
+    except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ1 - Completeness
+# HELPER - GET RULE THRESHOLD
+# ============================================================
+
+def get_rule_threshold(rule):
+    """
+    Return threshold configuration for a DQ rule.
+    """
+
+    threshold = rule.get(
+        "threshold",
+        {}
+    )
+
+    if not isinstance(
+        threshold,
+        dict
+    ):
+        threshold = {}
+
+    return threshold
+
+
+# ============================================================
+# DQ1 - COMPLETENESS
 # ============================================================
 
 def check_completeness(
     df,
-    pass_threshold=95,
-    warning_threshold=80
+    threshold
 ):
     """
-    DQ1:
-    Checks overall percentage of populated cells.
+    DQ1 - Completeness
 
-    PASS    >= pass_threshold
-    WARNING >= warning_threshold
-    FAIL    < warning_threshold
+    Metric:
+        null_percentage
     """
 
     try:
@@ -73,7 +171,10 @@ def check_completeness(
         if total_rows == 0:
             return "FAIL"
 
-        total_cells = total_rows * len(df.columns)
+        total_cells = (
+            total_rows
+            * len(df.columns)
+        )
 
         if total_cells == 0:
             return "FAIL"
@@ -82,42 +183,51 @@ def check_completeness(
 
         for column_name in df.columns:
 
-            null_count = (
+            null_cells += (
                 df.filter(
                     col(column_name).isNull()
                 ).count()
             )
 
-            null_cells += null_count
-
-        completeness_percentage = (
-            (total_cells - null_cells)
-            / total_cells
-        ) * 100
+        null_percentage = calculate_percentage(
+            null_cells,
+            total_cells
+        )
 
         return get_status(
-            completeness_percentage,
-            pass_threshold,
-            warning_threshold
+            null_percentage,
+            threshold
         )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ2 - Accuracy
+# DQ2 - ACCURACY
 # ============================================================
 
-def check_accuracy(df):
+def check_accuracy(
+    df,
+    threshold
+):
     """
-    DQ2:
-    Basic accuracy validation.
+    DQ2 - Accuracy
 
-    Checks numeric columns for NaN values.
+    Metric:
+        accuracy_failure_percentage
+
+    Current validation:
+        NaN values in numeric columns.
     """
 
     try:
+
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
 
         numeric_columns = [
             field.name
@@ -130,64 +240,114 @@ def check_accuracy(df):
             ]
         ]
 
+        if not numeric_columns:
+            return "PASS"
+
+        invalid_count = 0
+
         for column_name in numeric_columns:
 
-            invalid_count = (
+            invalid_count += (
                 df.filter(
-                    isnan(col(column_name))
+                    isnan(
+                        col(column_name)
+                    )
                 ).count()
             )
 
-            if invalid_count > 0:
-                return "FAIL"
+        total_possible = (
+            total_rows
+            * len(numeric_columns)
+        )
 
-        return "PASS"
+        failure_percentage = calculate_percentage(
+            invalid_count,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ3 - Validity
+# DQ3 - VALIDITY
 # ============================================================
 
-def check_validity(df):
+def check_validity(
+    df,
+    threshold
+):
     """
-    DQ3:
-    Checks whether the dataset contains valid
-    Spark-supported data types and columns.
+    DQ3 - Validity
+
+    Metric:
+        invalid_percentage
     """
 
     try:
 
-        if len(df.columns) == 0:
+        total_columns = len(
+            df.columns
+        )
+
+        if total_columns == 0:
             return "FAIL"
 
-        for field in df.schema.fields:
+        invalid_columns = sum(
+            1
+            for field in df.schema.fields
+            if field.dataType is None
+        )
 
-            if field.dataType is None:
-                return "FAIL"
+        failure_percentage = calculate_percentage(
+            invalid_columns,
+            total_columns
+        )
 
-        return "PASS"
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ4 - Uniqueness
+# DQ4 - UNIQUENESS
 # ============================================================
 
-def check_uniqueness(df):
+def check_uniqueness(
+    df,
+    threshold
+):
     """
-    DQ4:
-    Checks uniqueness of likely business key columns.
+    DQ4 - Uniqueness
+
+    Metric:
+        duplicate_percentage
+
+    Candidate business keys:
+        columns containing 'id' or 'key'
     """
 
     try:
 
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
+
         candidate_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if (
                 "id" in c.lower()
                 or "key" in c.lower()
@@ -197,15 +357,33 @@ def check_uniqueness(df):
         if not candidate_columns:
             return "PASS"
 
+        duplicate_records = 0
+
         for column_name in candidate_columns:
 
-            total_count = df.count()
-
-            distinct_count = (
-                df.select(column_name)
-                .distinct()
-                .count()
+            non_null_df = df.filter(
+                col(column_name).isNotNull()
             )
+
+            duplicate_rows = (
+                non_null_df
+                .groupBy(column_name)
+                .count()
+                .filter(
+                    col("count") > 1
+                )
+            )
+
+            duplicate_count = (
+                duplicate_rows
+                .selectExpr(
+                    "coalesce(sum(count), 0) as total"
+                )
+                .collect()[0]["total"]
+            )
+
+            if duplicate_count is None:
+                duplicate_count = 0
 
             null_count = (
                 df.filter(
@@ -213,41 +391,70 @@ def check_uniqueness(df):
                 ).count()
             )
 
-            if (
-                total_count != distinct_count
-                or null_count > 0
-            ):
-                return "FAIL"
+            duplicate_records += (
+                duplicate_count
+                + null_count
+            )
 
-        return "PASS"
+        total_possible = (
+            total_rows
+            * len(candidate_columns)
+        )
+
+        failure_percentage = calculate_percentage(
+            duplicate_records,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ5 - Consistency
+# DQ5 - CONSISTENCY
 # ============================================================
 
-def check_consistency(df):
+def check_consistency(
+    df,
+    threshold
+):
     """
-    DQ5:
-    Basic cross-column consistency checks.
+    DQ5 - Consistency
 
-    Examples:
-    start date <= end date
-    quantity >= 0
+    Checks:
+
+        start <= end
+        quantity >= 0
+
+    Metric:
+        inconsistency_percentage
     """
 
     try:
 
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
+
+        invalid_rows = 0
+        checks_performed = 0
+
         start_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if "start" in c.lower()
         ]
 
         end_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if "end" in c.lower()
         ]
 
@@ -256,17 +463,18 @@ def check_consistency(df):
             start_col = start_columns[0]
             end_col = end_columns[0]
 
-            invalid = (
+            checks_performed += 1
+
+            invalid_rows += (
                 df.filter(
-                    col(start_col) > col(end_col)
+                    col(start_col)
+                    > col(end_col)
                 ).count()
             )
 
-            if invalid > 0:
-                return "FAIL"
-
         quantity_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if (
                 "quantity" in c.lower()
                 or "qty" in c.lower()
@@ -275,72 +483,125 @@ def check_consistency(df):
 
         for column_name in quantity_columns:
 
-            invalid = (
+            checks_performed += 1
+
+            invalid_rows += (
                 df.filter(
                     col(column_name) < 0
                 ).count()
             )
 
-            if invalid > 0:
-                return "FAIL"
+        if checks_performed == 0:
+            return "PASS"
 
-        return "PASS"
+        total_possible = (
+            total_rows
+            * checks_performed
+        )
+
+        failure_percentage = calculate_percentage(
+            invalid_rows,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ6 - Integrity
+# DQ6 - INTEGRITY
 # ============================================================
 
-def check_integrity(df):
+def check_integrity(
+    df,
+    threshold
+):
     """
-    DQ6:
-    Basic referential/integrity validation.
+    DQ6 - Integrity
 
-    Checks ID/key columns are not null.
+    Metric:
+        integrity_failure_percentage
     """
 
     try:
 
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
+
         key_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if (
                 "id" in c.lower()
                 or "key" in c.lower()
             )
         ]
 
+        if not key_columns:
+            return "PASS"
+
+        total_nulls = 0
+
         for column_name in key_columns:
 
-            null_count = (
+            total_nulls += (
                 df.filter(
                     col(column_name).isNull()
                 ).count()
             )
 
-            if null_count > 0:
-                return "FAIL"
+        total_possible = (
+            total_rows
+            * len(key_columns)
+        )
 
-        return "PASS"
+        failure_percentage = calculate_percentage(
+            total_nulls,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ7 - Timeliness
+# DQ7 - TIMELINESS
 # ============================================================
 
-def check_timeliness(df):
+def check_timeliness(
+    df,
+    threshold
+):
     """
-    DQ7:
-    Checks whether date/timestamp columns contain
-    future values.
+    DQ7 - Timeliness
+
+    Current validation:
+        future date/timestamp values.
+
+    Metric:
+        latency_percentage
     """
 
     try:
+
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
 
         date_columns = [
             field.name
@@ -352,58 +613,112 @@ def check_timeliness(df):
             )
         ]
 
+        if not date_columns:
+            return "PASS"
+
+        future_count = 0
+
         for column_name in date_columns:
 
-            future_count = (
+            future_count += (
                 df.filter(
-                    col(column_name) > current_timestamp()
+                    col(column_name)
+                    > current_timestamp()
                 ).count()
             )
 
-            if future_count > 0:
-                return "FAIL"
+        total_possible = (
+            total_rows
+            * len(date_columns)
+        )
 
-        return "PASS"
+        failure_percentage = calculate_percentage(
+            future_count,
+            total_possible
+        )
 
-    except Exception:
-        return "PASS"
-
-
-# ============================================================
-# DQ8 - Conformity
-# ============================================================
-
-def check_conformity(df):
-    """
-    DQ8:
-    Checks that column names do not contain spaces.
-    """
-
-    try:
-
-        for column_name in df.columns:
-
-            if " " in column_name:
-                return "FAIL"
-
-        return "PASS"
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ9 - Range
+# DQ8 - CONFORMITY
 # ============================================================
 
-def check_range(df):
+def check_conformity(
+    df,
+    threshold
+):
     """
-    DQ9:
-    Checks common numeric business metrics
-    for negative values.
+    DQ8 - Conformity
+
+    Invalid:
+        column names containing spaces.
+
+    Metric:
+        non_conforming_percentage
     """
 
     try:
+
+        total_columns = len(
+            df.columns
+        )
+
+        if total_columns == 0:
+            return "FAIL"
+
+        invalid_columns = sum(
+            1
+            for column_name in df.columns
+            if " " in column_name
+        )
+
+        failure_percentage = calculate_percentage(
+            invalid_columns,
+            total_columns
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
+
+    except Exception:
+
+        return "FAIL"
+
+
+# ============================================================
+# DQ9 - RANGE
+# ============================================================
+
+def check_range(
+    df,
+    threshold
+):
+    """
+    DQ9 - Range
+
+    Checks negative values in common
+    business numeric fields.
+
+    Metric:
+        out_of_range_percentage
+    """
+
+    try:
+
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
 
         numeric_columns = [
             field.name
@@ -420,12 +735,11 @@ def check_range(df):
             ]
         ]
 
-        for column_name in numeric_columns:
-
-            column_lower = column_name.lower()
-
+        business_columns = [
+            c
+            for c in numeric_columns
             if any(
-                keyword in column_lower
+                keyword in c.lower()
                 for keyword in [
                     "amount",
                     "revenue",
@@ -435,158 +749,300 @@ def check_range(df):
                     "quantity",
                     "count"
                 ]
-            ):
+            )
+        ]
 
-                negative_count = (
-                    df.filter(
-                        col(column_name) < 0
-                    ).count()
-                )
+        if not business_columns:
+            return "PASS"
 
-                if negative_count > 0:
-                    return "FAIL"
+        invalid_values = 0
 
-        return "PASS"
+        for column_name in business_columns:
+
+            invalid_values += (
+                df.filter(
+                    col(column_name) < 0
+                ).count()
+            )
+
+        total_possible = (
+            total_rows
+            * len(business_columns)
+        )
+
+        failure_percentage = calculate_percentage(
+            invalid_values,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ10 - Duplicate
+# DQ10 - DUPLICATE
 # ============================================================
 
-def check_duplicate(df):
+def check_duplicate(
+    df,
+    threshold
+):
     """
-    DQ10:
-    Checks for complete duplicate rows.
+    DQ10 - Duplicate
+
+    Checks complete duplicate rows.
+
+    Metric:
+        duplicate_percentage
     """
 
     try:
 
-        total_count = df.count()
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
 
         distinct_count = (
             df.distinct().count()
         )
 
-        if total_count != distinct_count:
-            return "FAIL"
+        duplicate_count = (
+            total_rows
+            - distinct_count
+        )
 
-        return "PASS"
+        failure_percentage = calculate_percentage(
+            duplicate_count,
+            total_rows
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ11 - Null
+# DQ11 - NULL
 # ============================================================
 
-def check_null(df):
+def check_null(
+    df,
+    threshold
+):
     """
-    DQ11:
-    Checks whether any null values exist.
+    DQ11 - Null
+
+    Metric:
+        null_percentage
     """
 
     try:
 
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
+
+        total_cells = (
+            total_rows
+            * len(df.columns)
+        )
+
+        if total_cells == 0:
+            return "FAIL"
+
+        null_cells = 0
+
         for column_name in df.columns:
 
-            null_count = (
+            null_cells += (
                 df.filter(
                     col(column_name).isNull()
                 ).count()
             )
 
-            if null_count > 0:
-                return "FAIL"
+        failure_percentage = calculate_percentage(
+            null_cells,
+            total_cells
+        )
 
-        return "PASS"
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ12 - Length
+# DQ12 - LENGTH
 # ============================================================
 
-def check_length(df):
+def check_length(
+    df,
+    threshold
+):
     """
-    DQ12:
-    Checks excessive text length.
+    DQ12 - Length
+
+    Checks string values longer than
+    1000 characters.
+
+    Metric:
+        invalid_length_percentage
     """
 
     try:
+
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
 
         string_columns = [
             field.name
             for field in df.schema.fields
-            if field.dataType.simpleString() == "string"
+            if field.dataType.simpleString()
+            == "string"
         ]
+
+        if not string_columns:
+            return "PASS"
+
+        invalid_values = 0
 
         for column_name in string_columns:
 
-            invalid_count = (
+            invalid_values += (
                 df.filter(
                     col(column_name)
                     .cast("string")
-                    .substr(1001, 1) != ""
+                    .substr(1001, 1)
+                    .isNotNull()
                 ).count()
             )
 
-            if invalid_count > 0:
-                return "FAIL"
+        total_possible = (
+            total_rows
+            * len(string_columns)
+        )
 
-        return "PASS"
+        failure_percentage = calculate_percentage(
+            invalid_values,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ13 - Data Type
+# DQ13 - DATA TYPE
 # ============================================================
 
-def check_data_type(df):
+def check_data_type(
+    df,
+    threshold
+):
     """
-    DQ13:
-    Checks that all columns have identifiable
-    Spark data types.
+    DQ13 - Data Type
+
+    Metric:
+        type_mismatch_percentage
+
+    Current generic implementation validates that every
+    Spark column has an identifiable data type.
     """
 
     try:
 
-        for field in df.schema.fields:
+        total_columns = len(
+            df.columns
+        )
 
-            if field.dataType is None:
-                return "FAIL"
+        if total_columns == 0:
+            return "FAIL"
 
-        return "PASS"
+        invalid_columns = sum(
+            1
+            for field in df.schema.fields
+            if field.dataType is None
+        )
+
+        failure_percentage = calculate_percentage(
+            invalid_columns,
+            total_columns
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ14 - Pattern
+# DQ14 - PATTERN
 # ============================================================
 
-def check_pattern(df):
+def check_pattern(
+    df,
+    threshold
+):
     """
-    DQ14:
-    Basic pattern validation for email columns.
+    DQ14 - Pattern
+
+    Current validation:
+        email columns must contain '@'.
+
+    Metric:
+        pattern_failure_percentage
     """
 
     try:
 
         email_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if "email" in c.lower()
         ]
 
+        if not email_columns:
+            return "PASS"
+
+        total_checked = 0
+        invalid_values = 0
+
         for column_name in email_columns:
+
+            non_null_count = (
+                df.filter(
+                    col(column_name).isNotNull()
+                ).count()
+            )
 
             invalid_count = (
                 df.filter(
@@ -595,29 +1051,55 @@ def check_pattern(df):
                 ).count()
             )
 
-            if invalid_count > 0:
-                return "FAIL"
+            total_checked += non_null_count
+            invalid_values += invalid_count
 
-        return "PASS"
+        if total_checked == 0:
+            return "PASS"
+
+        failure_percentage = calculate_percentage(
+            invalid_values,
+            total_checked
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ15 - Business Rule
+# DQ15 - BUSINESS RULE
 # ============================================================
 
-def check_business_rule(df):
+def check_business_rule(
+    df,
+    threshold
+):
     """
-    DQ15:
-    Checks common business metrics for negative values.
+    DQ15 - Business Rule
+
+    Current validation:
+        common financial metrics cannot be negative.
+
+    Metric:
+        business_rule_violation_percentage
     """
 
     try:
 
+        total_rows = df.count()
+
+        if total_rows == 0:
+            return "FAIL"
+
         business_columns = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if any(
                 keyword in c.lower()
                 for keyword in [
@@ -630,44 +1112,102 @@ def check_business_rule(df):
             )
         ]
 
+        if not business_columns:
+            return "PASS"
+
+        invalid_values = 0
+
         for column_name in business_columns:
 
-            invalid_count = (
+            invalid_values += (
                 df.filter(
                     col(column_name) < 0
                 ).count()
             )
 
-            if invalid_count > 0:
-                return "FAIL"
+        total_possible = (
+            total_rows
+            * len(business_columns)
+        )
 
-        return "PASS"
+        failure_percentage = calculate_percentage(
+            invalid_values,
+            total_possible
+        )
+
+        return get_status(
+            failure_percentage,
+            threshold
+        )
 
     except Exception:
+
         return "FAIL"
 
 
 # ============================================================
-# DQ16 - Volume
+# DQ16 - VOLUME
 # ============================================================
 
-def check_volume(df):
+def check_volume(
+    df,
+    threshold,
+    baseline_row_count=None
+):
     """
-    DQ16:
-    Checks whether the table contains records.
+    DQ16 - Volume
+
+    Metric:
+        volume_change_percentage
+
+    If baseline_row_count is available:
+
+        abs(current - baseline)
+        ------------------------ * 100
+             baseline
+
+    If no baseline exists, the framework cannot calculate
+    volume change. A non-empty table is therefore treated
+    as PASS for the current implementation.
     """
 
     try:
 
-        row_count = df.count()
+        current_row_count = df.count()
 
-        return (
-            "PASS"
-            if row_count > 0
-            else "FAIL"
+        if current_row_count == 0:
+            return "FAIL"
+
+        # ----------------------------------------------------
+        # No historical baseline
+        # ----------------------------------------------------
+
+        if baseline_row_count is None:
+
+            return "PASS"
+
+        baseline_row_count = float(
+            baseline_row_count
+        )
+
+        if baseline_row_count <= 0:
+            return "FAIL"
+
+        volume_change_percentage = (
+            abs(
+                current_row_count
+                - baseline_row_count
+            )
+            / baseline_row_count
+        ) * 100.0
+
+        return get_status(
+            volume_change_percentage,
+            threshold
         )
 
     except Exception:
+
         return "FAIL"
 
 
@@ -680,123 +1220,190 @@ def run_dq_checks(
     catalog,
     schema,
     table,
-    rules
+    rules,
+    overall_thresholds,
+    baseline_row_count=None
 ):
     """
     Execute all enabled DQ rules.
 
-    Weighted score:
+    YAML controls:
 
-        PASS    = 100% of rule weight
-        WARNING = 50% of rule weight
-        FAIL    = 0% of rule weight
+        - enabled/disabled rules
+        - rule weights
+        - individual thresholds
+        - overall score thresholds
 
-    Total Score =
-        Weighted earned score /
-        Total enabled weight * 100
+    Weighted scoring:
+
+        PASS    = 100% weight
+        WARNING = 50% weight
+        FAIL    = 0% weight
     """
 
     full_table_name = (
         f"`{catalog}`.`{schema}`.`{table}`"
     )
 
-    # --------------------------------------------------------
-    # Load table
-    # --------------------------------------------------------
+    # ========================================================
+    # LOAD TABLE
+    # ========================================================
 
     try:
 
-        df = spark.table(full_table_name)
+        df = spark.table(
+            full_table_name
+        )
 
     except Exception:
 
-        return {
+        result = {
             "catalog": catalog,
             "schema": schema,
-            "table": table,
-            **{
-                f"DQ{i}": "FAIL"
-                for i in range(1, 17)
-            },
-            "Total Score": 0.0
+            "table": table
         }
 
-    # --------------------------------------------------------
-    # Read threshold configuration
-    # --------------------------------------------------------
+        for rule in rules:
 
-    threshold_config = {}
+            if rule.get(
+                "enabled",
+                False
+            ):
 
-    for rule in rules:
+                result[rule["id"]] = "FAIL"
 
-        rule_id = rule["id"]
+        result["Total Score"] = 0.0
+        result["Overall Status"] = "FAIL"
 
-        threshold_config[rule_id] = {
-            "pass": float(
-                rule.get(
-                    "pass_threshold",
-                    95
-                )
-            ),
-            "warning": float(
-                rule.get(
-                    "warning_threshold",
-                    80
-                )
-            )
-        }
+        return result
 
-    # --------------------------------------------------------
-    # Execute all DQ checks
-    # --------------------------------------------------------
+    # ========================================================
+    # RULE MAP
+    # ========================================================
+
+    rule_map = {
+        rule["id"]: rule
+        for rule in rules
+    }
+
+    # ========================================================
+    # THRESHOLD HELPER
+    # ========================================================
+
+    def threshold_for(dq_id):
+
+        rule = rule_map.get(
+            dq_id,
+            {}
+        )
+
+        return get_rule_threshold(
+            rule
+        )
+
+    # ========================================================
+    # EXECUTE DQ RULES
+    # ========================================================
 
     dq_results = {}
 
     dq_results["DQ1"] = check_completeness(
         df,
-        threshold_config["DQ1"]["pass"],
-        threshold_config["DQ1"]["warning"]
+        threshold_for("DQ1")
     )
 
-    dq_results["DQ2"] = check_accuracy(df)
+    dq_results["DQ2"] = check_accuracy(
+        df,
+        threshold_for("DQ2")
+    )
 
-    dq_results["DQ3"] = check_validity(df)
+    dq_results["DQ3"] = check_validity(
+        df,
+        threshold_for("DQ3")
+    )
 
-    dq_results["DQ4"] = check_uniqueness(df)
+    dq_results["DQ4"] = check_uniqueness(
+        df,
+        threshold_for("DQ4")
+    )
 
-    dq_results["DQ5"] = check_consistency(df)
+    dq_results["DQ5"] = check_consistency(
+        df,
+        threshold_for("DQ5")
+    )
 
-    dq_results["DQ6"] = check_integrity(df)
+    dq_results["DQ6"] = check_integrity(
+        df,
+        threshold_for("DQ6")
+    )
 
-    dq_results["DQ7"] = check_timeliness(df)
+    dq_results["DQ7"] = check_timeliness(
+        df,
+        threshold_for("DQ7")
+    )
 
-    dq_results["DQ8"] = check_conformity(df)
+    dq_results["DQ8"] = check_conformity(
+        df,
+        threshold_for("DQ8")
+    )
 
-    dq_results["DQ9"] = check_range(df)
+    dq_results["DQ9"] = check_range(
+        df,
+        threshold_for("DQ9")
+    )
 
-    dq_results["DQ10"] = check_duplicate(df)
+    dq_results["DQ10"] = check_duplicate(
+        df,
+        threshold_for("DQ10")
+    )
 
-    dq_results["DQ11"] = check_null(df)
+    dq_results["DQ11"] = check_null(
+        df,
+        threshold_for("DQ11")
+    )
 
-    dq_results["DQ12"] = check_length(df)
+    dq_results["DQ12"] = check_length(
+        df,
+        threshold_for("DQ12")
+    )
 
-    dq_results["DQ13"] = check_data_type(df)
+    dq_results["DQ13"] = check_data_type(
+        df,
+        threshold_for("DQ13")
+    )
 
-    dq_results["DQ14"] = check_pattern(df)
+    dq_results["DQ14"] = check_pattern(
+        df,
+        threshold_for("DQ14")
+    )
 
-    dq_results["DQ15"] = check_business_rule(df)
+    dq_results["DQ15"] = check_business_rule(
+        df,
+        threshold_for("DQ15")
+    )
 
-    dq_results["DQ16"] = check_volume(df)
+    dq_results["DQ16"] = check_volume(
+        df,
+        threshold_for("DQ16"),
+        baseline_row_count
+    )
 
-    # --------------------------------------------------------
-    # Weighted score
-    # --------------------------------------------------------
+    # ========================================================
+    # ONLY ENABLED RULES PARTICIPATE IN SCORE
+    # ========================================================
 
     enabled_rules = [
         rule
         for rule in rules
-        if rule.get("enabled", False)
+        if rule.get(
+            "enabled",
+            False
+        )
     ]
+
+    # ========================================================
+    # TOTAL WEIGHT
+    # ========================================================
 
     total_enabled_weight = sum(
         float(
@@ -807,6 +1414,10 @@ def run_dq_checks(
         )
         for rule in enabled_rules
     )
+
+    # ========================================================
+    # EARNED WEIGHT
+    # ========================================================
 
     earned_weight = 0.0
 
@@ -828,22 +1439,21 @@ def run_dq_checks(
 
         if status == "PASS":
 
-            # Full weight
             earned_weight += weight
 
         elif status == "WARNING":
 
-            # Half weight
-            earned_weight += weight * 0.5
+            earned_weight += (
+                weight * 0.5
+            )
 
         elif status == "FAIL":
 
-            # Zero weight
-            earned_weight += 0
+            earned_weight += 0.0
 
-    # --------------------------------------------------------
-    # Calculate total score
-    # --------------------------------------------------------
+    # ========================================================
+    # TOTAL SCORE
+    # ========================================================
 
     if total_enabled_weight > 0:
 
@@ -859,9 +1469,61 @@ def run_dq_checks(
 
         total_score = 0.0
 
-    # --------------------------------------------------------
-    # Final result
-    # --------------------------------------------------------
+    # ========================================================
+    # OVERALL STATUS FROM YAML
+    # ========================================================
+
+    if not isinstance(
+        overall_thresholds,
+        dict
+    ):
+
+        overall_thresholds = {
+            "pass": 90,
+            "warning": 75,
+            "fail": 0
+        }
+
+    overall_pass = float(
+        overall_thresholds.get(
+            "pass",
+            90
+        )
+    )
+
+    overall_warning = float(
+        overall_thresholds.get(
+            "warning",
+            75
+        )
+    )
+
+    overall_fail = float(
+        overall_thresholds.get(
+            "fail",
+            0
+        )
+    )
+
+    if total_score >= overall_pass:
+
+        overall_status = "PASS"
+
+    elif total_score >= overall_warning:
+
+        overall_status = "WARNING"
+
+    elif total_score >= overall_fail:
+
+        overall_status = "FAIL"
+
+    else:
+
+        overall_status = "FAIL"
+
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
 
     result = {
         "catalog": catalog,
@@ -869,8 +1531,26 @@ def run_dq_checks(
         "table": table
     }
 
-    result.update(dq_results)
+    # --------------------------------------------------------
+    # Add only configured rules
+    # --------------------------------------------------------
+
+    for rule in rules:
+
+        rule_id = rule["id"]
+
+        if rule.get(
+            "enabled",
+            False
+        ):
+
+            result[rule_id] = dq_results.get(
+                rule_id,
+                "FAIL"
+            )
 
     result["Total Score"] = total_score
+
+    result["Overall Status"] = overall_status
 
     return result

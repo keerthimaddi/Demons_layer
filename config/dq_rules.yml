@@ -4,14 +4,6 @@ dq_framework:
   # --------------------------------------------------
   # Overall DQ Score Thresholds
   # --------------------------------------------------
-  # These determine the overall health of a table
-  # after all individual DQ checks are evaluated.
-  #
-  # PASS     >= 90
-  # WARNING  >= 75 and < 90
-  # FAIL     < 75
-  # --------------------------------------------------
-
   overall_score_threshold:
     pass: 90
     warning: 75
@@ -33,8 +25,6 @@ dq_framework:
       level: column
       enabled: true
       default_weight: 10
-      pass_threshold: 95
-      warning_threshold: 80
 
       threshold:
         metric: null_percentage
