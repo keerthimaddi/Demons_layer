@@ -1,7 +1,8 @@
 from pyspark.sql.functions import (
     col,
     isnan,
-    current_timestamp
+    current_timestamp,
+    length
 )
 
 
@@ -346,13 +347,16 @@ def check_uniqueness(
             return "FAIL"
 
         candidate_columns = [
-            c
-            for c in df.columns
+            c for c in df.columns
             if (
-                "id" in c.lower()
-                or "key" in c.lower()
+                    "id" in c.lower()
+                    or "key" in c.lower()
             )
         ]
+
+        print(
+            f"DQ4 candidate uniqueness columns: {candidate_columns}"
+        )
 
         if not candidate_columns:
             return "PASS"
@@ -617,6 +621,10 @@ def check_timeliness(
             return "PASS"
 
         future_count = 0
+
+        print(
+            f"DQ7 date/timestamp columns: {date_columns}"
+        )
 
         for column_name in date_columns:
 
@@ -892,15 +900,21 @@ def check_null(
 # DQ12 - LENGTH
 # ============================================================
 
-def check_length(
-    df,
-    threshold
-):
+def check_length(df, threshold):
     """
     DQ12 - Length
 
-    Checks string values longer than
-    1000 characters.
+    Checks string columns for values longer than
+    the configured maximum length.
+
+    YAML threshold example:
+
+        threshold:
+          metric: invalid_length_percentage
+          pass: 0
+          warning: 5
+          fail: 10
+          max_length: 1000
 
     Metric:
         invalid_length_percentage
@@ -916,12 +930,25 @@ def check_length(
         string_columns = [
             field.name
             for field in df.schema.fields
-            if field.dataType.simpleString()
-            == "string"
+            if field.dataType.simpleString() == "string"
         ]
 
         if not string_columns:
             return "PASS"
+
+        # ----------------------------------------------------
+        # Get maximum allowed length from YAML
+        # ----------------------------------------------------
+
+        max_length = threshold.get(
+            "max_length",
+            1000
+        )
+
+        try:
+            max_length = int(max_length)
+        except (TypeError, ValueError):
+            max_length = 1000
 
         invalid_values = 0
 
@@ -929,10 +956,11 @@ def check_length(
 
             invalid_values += (
                 df.filter(
-                    col(column_name)
-                    .cast("string")
-                    .substr(1001, 1)
-                    .isNotNull()
+                    col(column_name).isNotNull()
+                    & (
+                        length(col(column_name))
+                        > max_length
+                    )
                 ).count()
             )
 
@@ -952,7 +980,6 @@ def check_length(
         )
 
     except Exception:
-
         return "FAIL"
 
 

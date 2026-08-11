@@ -102,7 +102,6 @@ def load_dq_rules():
         )
 
     print(
-        f"\nOverall Score Thresholds:"
         f"\nPASS    >= {overall_thresholds.get('pass')}"
         f"\nWARNING >= {overall_thresholds.get('warning')}"
         f"\nFAIL    < {overall_thresholds.get('warning')}"

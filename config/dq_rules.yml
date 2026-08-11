@@ -218,6 +218,7 @@ dq_framework:
         pass: 0
         warning: 5
         fail: 10
+        max_length: 1000
 
     # -----------------------------------------------
     # DQ13 - Data Type
