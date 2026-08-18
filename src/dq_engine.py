@@ -65,7 +65,7 @@ def get_status(
         WARNING
         FAIL
 
-    using the YAML threshold.
+    using YAML thresholds.
 
     Example:
 
@@ -78,12 +78,15 @@ def get_status(
         <= 0%       PASS
         >0 - 5%     WARNING
         >5%         FAIL
-
-    The configured 'fail' threshold is retained as the
-    hard-fail boundary. Values above it are also FAIL.
     """
 
     try:
+
+        if not isinstance(
+            threshold,
+            dict
+        ):
+            threshold = {}
 
         pass_threshold = float(
             threshold.get(
@@ -131,27 +134,58 @@ def get_status(
 # HELPER - GET RULE THRESHOLD
 # ============================================================
 
-def get_rule_threshold(rule):
+def get_rule_threshold(
+    rule
+):
     """
     Return threshold configuration for a DQ rule.
+
+    Supports both:
+
+        threshold:
+            pass: ...
+            warning: ...
+            fail: ...
+
+    and:
+
+        rules:
+            pass: ...
+            warning: ...
+            fail: ...
     """
 
+    if not isinstance(
+        rule,
+        dict
+    ):
+        return {}
+
     threshold = rule.get(
-        "threshold",
-        {}
+        "threshold"
     )
 
-    if not isinstance(
+    if isinstance(
         threshold,
         dict
     ):
-        threshold = {}
+        return threshold
 
-    return threshold
+    rules_config = rule.get(
+        "rules"
+    )
+
+    if isinstance(
+        rules_config,
+        dict
+    ):
+        return rules_config
+
+    return {}
 
 
 # ============================================================
-# DQ1 - COMPLETENESS
+# DQ01 - COMPLETENESS
 # ============================================================
 
 def check_completeness(
@@ -159,10 +193,10 @@ def check_completeness(
     threshold
 ):
     """
-    DQ1 - Completeness
+    DQ01 - Completeness
 
-    Metric:
-        null_percentage
+    Measures the percentage of NULL cells
+    across the dataset.
     """
 
     try:
@@ -172,13 +206,17 @@ def check_completeness(
         if total_rows == 0:
             return "FAIL"
 
-        total_cells = (
-            total_rows
-            * len(df.columns)
+        total_columns = len(
+            df.columns
         )
 
-        if total_cells == 0:
+        if total_columns == 0:
             return "FAIL"
+
+        total_cells = (
+            total_rows
+            * total_columns
+        )
 
         null_cells = 0
 
@@ -200,13 +238,17 @@ def check_completeness(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ01 completeness check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ2 - ACCURACY
+# DQ02 - ACCURACY
 # ============================================================
 
 def check_accuracy(
@@ -214,13 +256,14 @@ def check_accuracy(
     threshold
 ):
     """
-    DQ2 - Accuracy
+    DQ02 - Accuracy
 
-    Metric:
-        accuracy_failure_percentage
+    Current generic implementation checks
+    numeric columns for NaN values.
 
-    Current validation:
-        NaN values in numeric columns.
+    If no numeric columns exist, the check
+    is considered PASS because there is no
+    applicable numeric accuracy test.
     """
 
     try:
@@ -237,7 +280,11 @@ def check_accuracy(
             in [
                 "double",
                 "float",
-                "decimal"
+                "decimal",
+                "int",
+                "bigint",
+                "long",
+                "short"
             ]
         ]
 
@@ -271,13 +318,17 @@ def check_accuracy(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ02 accuracy check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ3 - VALIDITY
+# DQ03 - VALIDITY
 # ============================================================
 
 def check_validity(
@@ -285,10 +336,10 @@ def check_validity(
     threshold
 ):
     """
-    DQ3 - Validity
+    DQ03 - Validity
 
-    Metric:
-        invalid_percentage
+    Generic validation that all columns
+    have valid Spark data types.
     """
 
     try:
@@ -316,13 +367,17 @@ def check_validity(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ03 validity check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ4 - UNIQUENESS
+# DQ04 - UNIQUENESS
 # ============================================================
 
 def check_uniqueness(
@@ -331,18 +386,15 @@ def check_uniqueness(
     table_name=None
 ):
     """
-    DQ4 - Uniqueness
+    DQ04 - Uniqueness
 
-    Checks duplicate values in configured unique-key columns.
+    Uses configured unique keys when available.
 
-    The unique keys are configured in dq_rules.yml.
+    If no configured key exists, automatically
+    detects columns ending with:
 
-    Example:
-
-        wmg.default.customers_100:
-            - customer_id
-
-    NULL values are not treated as duplicate values.
+        _id
+        _key
     """
 
     try:
@@ -352,16 +404,15 @@ def check_uniqueness(
         if total_rows == 0:
             return "FAIL"
 
-        # ----------------------------------------------------
-        # Get configured unique keys
-        # ----------------------------------------------------
-
         unique_keys = threshold.get(
             "unique_keys",
             {}
         )
 
-        if not isinstance(unique_keys, dict):
+        if not isinstance(
+            unique_keys,
+            dict
+        ):
             unique_keys = {}
 
         configured_columns = unique_keys.get(
@@ -369,19 +420,20 @@ def check_uniqueness(
         )
 
         # ----------------------------------------------------
-        # If table is explicitly configured with []
-        # then there is no uniqueness check to perform.
+        # Explicitly configured empty key list
         # ----------------------------------------------------
 
         if configured_columns == []:
+
             print(
-                "DQ4: No unique key configured for "
+                "DQ04: No unique key configured for "
                 f"{table_name}"
             )
+
             return "PASS"
 
         # ----------------------------------------------------
-        # If table has configured keys, use them.
+        # Configured keys
         # ----------------------------------------------------
 
         if configured_columns:
@@ -393,14 +445,14 @@ def check_uniqueness(
             ]
 
             print(
-                "DQ4 configured uniqueness columns: "
+                "DQ04 configured uniqueness columns: "
                 f"{candidate_columns}"
             )
 
         else:
 
             # ------------------------------------------------
-            # Fallback automatic detection
+            # Automatic key detection
             # ------------------------------------------------
 
             candidate_columns = [
@@ -413,23 +465,15 @@ def check_uniqueness(
             ]
 
             print(
-                "DQ4 automatically detected columns: "
+                "DQ04 automatically detected columns: "
                 f"{candidate_columns}"
             )
-
-        # ----------------------------------------------------
-        # No candidate columns
-        # ----------------------------------------------------
 
         if not candidate_columns:
             return "PASS"
 
         total_duplicate_records = 0
         total_non_null_records = 0
-
-        # ----------------------------------------------------
-        # Check each unique key
-        # ----------------------------------------------------
 
         for column_name in candidate_columns:
 
@@ -473,16 +517,8 @@ def check_uniqueness(
                 non_null_count
             )
 
-        # ----------------------------------------------------
-        # No values to check
-        # ----------------------------------------------------
-
         if total_non_null_records == 0:
             return "PASS"
-
-        # ----------------------------------------------------
-        # Calculate duplicate percentage
-        # ----------------------------------------------------
 
         duplicate_percentage = calculate_percentage(
             total_duplicate_records,
@@ -490,7 +526,7 @@ def check_uniqueness(
         )
 
         print(
-            f"DQ4 duplicate percentage: "
+            f"DQ04 duplicate percentage: "
             f"{duplicate_percentage:.2f}%"
         )
 
@@ -499,17 +535,17 @@ def check_uniqueness(
             threshold
         )
 
-    except Exception as e:
+    except Exception as error:
 
         print(
-            f"DQ4 uniqueness check failed: {e}"
+            f"DQ04 uniqueness check failed: {error}"
         )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ5 - CONSISTENCY
+# DQ05 - CONSISTENCY
 # ============================================================
 
 def check_consistency(
@@ -517,15 +553,12 @@ def check_consistency(
     threshold
 ):
     """
-    DQ5 - Consistency
+    DQ05 - Consistency
 
-    Checks:
+    Checks common consistency relationships:
 
         start <= end
         quantity >= 0
-
-    Metric:
-        inconsistency_percentage
     """
 
     try:
@@ -601,13 +634,17 @@ def check_consistency(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ05 consistency check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ6 - INTEGRITY
+# DQ06 - INTEGRITY
 # ============================================================
 
 def check_integrity(
@@ -615,10 +652,14 @@ def check_integrity(
     threshold
 ):
     """
-    DQ6 - Integrity
+    DQ06 - Integrity
 
-    Metric:
-        integrity_failure_percentage
+    Current generic implementation checks
+    ID/key columns for NULL values.
+
+    Cross-table referential integrity will be
+    enhanced when relationship configuration
+    is added to the YAML.
     """
 
     try:
@@ -665,13 +706,17 @@ def check_integrity(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ06 integrity check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ7 - TIMELINESS
+# DQ07 - TIMELINESS
 # ============================================================
 
 def check_timeliness(
@@ -679,13 +724,10 @@ def check_timeliness(
     threshold
 ):
     """
-    DQ7 - Timeliness
+    DQ07 - Timeliness
 
-    Current validation:
-        future date/timestamp values.
-
-    Metric:
-        latency_percentage
+    Checks date/timestamp columns for
+    future values.
     """
 
     try:
@@ -708,11 +750,12 @@ def check_timeliness(
         if not date_columns:
             return "PASS"
 
-        future_count = 0
-
         print(
-            f"DQ7 date/timestamp columns: {date_columns}"
+            f"DQ07 date/timestamp columns: "
+            f"{date_columns}"
         )
+
+        future_count = 0
 
         for column_name in date_columns:
 
@@ -738,13 +781,17 @@ def check_timeliness(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ07 timeliness check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ8 - CONFORMITY
+# DQ08 - CONFORMITY
 # ============================================================
 
 def check_conformity(
@@ -752,13 +799,10 @@ def check_conformity(
     threshold
 ):
     """
-    DQ8 - Conformity
+    DQ08 - Conformity
 
-    Invalid:
-        column names containing spaces.
-
-    Metric:
-        non_conforming_percentage
+    Current generic implementation checks
+    column names for spaces.
     """
 
     try:
@@ -786,13 +830,17 @@ def check_conformity(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ08 conformity check failed: {error}"
+        )
 
         return "FAIL"
 
 
 # ============================================================
-# DQ9 - RANGE
+# DQ09 - RANGE
 # ============================================================
 
 def check_range(
@@ -800,13 +848,10 @@ def check_range(
     threshold
 ):
     """
-    DQ9 - Range
+    DQ09 - Range
 
-    Checks negative values in common
-    business numeric fields.
-
-    Metric:
-        out_of_range_percentage
+    Checks common business numeric fields
+    for negative values.
     """
 
     try:
@@ -876,7 +921,11 @@ def check_range(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ09 range check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -893,9 +942,6 @@ def check_duplicate(
     DQ10 - Duplicate
 
     Checks complete duplicate rows.
-
-    Metric:
-        duplicate_percentage
     """
 
     try:
@@ -924,7 +970,11 @@ def check_duplicate(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ10 duplicate check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -940,8 +990,7 @@ def check_null(
     """
     DQ11 - Null
 
-    Metric:
-        null_percentage
+    Measures the percentage of NULL cells.
     """
 
     try:
@@ -951,13 +1000,17 @@ def check_null(
         if total_rows == 0:
             return "FAIL"
 
-        total_cells = (
-            total_rows
-            * len(df.columns)
+        total_columns = len(
+            df.columns
         )
 
-        if total_cells == 0:
+        if total_columns == 0:
             return "FAIL"
+
+        total_cells = (
+            total_rows
+            * total_columns
+        )
 
         null_cells = 0
 
@@ -979,7 +1032,11 @@ def check_null(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ11 null check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -988,24 +1045,14 @@ def check_null(
 # DQ12 - LENGTH
 # ============================================================
 
-def check_length(df, threshold):
+def check_length(
+    df,
+    threshold
+):
     """
     DQ12 - Length
 
-    Checks string columns for values longer than
-    the configured maximum length.
-
-    YAML threshold example:
-
-        threshold:
-          metric: invalid_length_percentage
-          pass: 0
-          warning: 5
-          fail: 10
-          max_length: 1000
-
-    Metric:
-        invalid_length_percentage
+    Checks string columns against max_length.
     """
 
     try:
@@ -1018,15 +1065,12 @@ def check_length(df, threshold):
         string_columns = [
             field.name
             for field in df.schema.fields
-            if field.dataType.simpleString() == "string"
+            if field.dataType.simpleString()
+            == "string"
         ]
 
         if not string_columns:
             return "PASS"
-
-        # ----------------------------------------------------
-        # Get maximum allowed length from YAML
-        # ----------------------------------------------------
 
         max_length = threshold.get(
             "max_length",
@@ -1034,8 +1078,16 @@ def check_length(df, threshold):
         )
 
         try:
-            max_length = int(max_length)
-        except (TypeError, ValueError):
+
+            max_length = int(
+                max_length
+            )
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
             max_length = 1000
 
         invalid_values = 0
@@ -1046,7 +1098,9 @@ def check_length(df, threshold):
                 df.filter(
                     col(column_name).isNotNull()
                     & (
-                        length(col(column_name))
+                        length(
+                            col(column_name)
+                        )
                         > max_length
                     )
                 ).count()
@@ -1067,7 +1121,12 @@ def check_length(df, threshold):
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ12 length check failed: {error}"
+        )
+
         return "FAIL"
 
 
@@ -1082,11 +1141,8 @@ def check_data_type(
     """
     DQ13 - Data Type
 
-    Metric:
-        type_mismatch_percentage
-
-    Current generic implementation validates that every
-    Spark column has an identifiable data type.
+    Generic validation that every column
+    has an identifiable Spark data type.
     """
 
     try:
@@ -1114,7 +1170,11 @@ def check_data_type(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ13 data type check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -1130,11 +1190,8 @@ def check_pattern(
     """
     DQ14 - Pattern
 
-    Current validation:
-        email columns must contain '@'.
-
-    Metric:
-        pattern_failure_percentage
+    Current generic implementation validates
+    email columns using '@'.
     """
 
     try:
@@ -1182,7 +1239,11 @@ def check_pattern(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ14 pattern check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -1198,11 +1259,8 @@ def check_business_rule(
     """
     DQ15 - Business Rule
 
-    Current validation:
-        common financial metrics cannot be negative.
-
-    Metric:
-        business_rule_violation_percentage
+    Current generic implementation checks
+    common financial fields for negative values.
     """
 
     try:
@@ -1255,7 +1313,11 @@ def check_business_rule(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ15 business rule check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -1272,18 +1334,14 @@ def check_volume(
     """
     DQ16 - Volume
 
-    Metric:
-        volume_change_percentage
-
-    If baseline_row_count is available:
+    If a historical baseline exists:
 
         abs(current - baseline)
         ------------------------ * 100
-             baseline
+              baseline
 
-    If no baseline exists, the framework cannot calculate
-    volume change. A non-empty table is therefore treated
-    as PASS for the current implementation.
+    If no baseline exists, a non-empty table
+    is currently treated as PASS.
     """
 
     try:
@@ -1293,12 +1351,7 @@ def check_volume(
         if current_row_count == 0:
             return "FAIL"
 
-        # ----------------------------------------------------
-        # No historical baseline
-        # ----------------------------------------------------
-
         if baseline_row_count is None:
-
             return "PASS"
 
         baseline_row_count = float(
@@ -1321,7 +1374,11 @@ def check_volume(
             threshold
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"DQ16 volume check failed: {error}"
+        )
 
         return "FAIL"
 
@@ -1342,18 +1399,19 @@ def run_dq_checks(
     """
     Execute all enabled DQ rules.
 
-    YAML controls:
+    IMPORTANT:
+        Rule IDs MUST match YAML exactly.
 
-        - enabled/disabled rules
-        - rule weights
-        - individual thresholds
-        - overall score thresholds
+        DQ01
+        DQ02
+        ...
+        DQ16
 
     Weighted scoring:
 
-        PASS    = 100% weight
-        WARNING = 50% weight
-        FAIL    = 0% weight
+        PASS    = 100% of weight
+        WARNING = 50% of weight
+        FAIL    = 0% of weight
     """
 
     full_table_name = (
@@ -1370,7 +1428,13 @@ def run_dq_checks(
             full_table_name
         )
 
-    except Exception:
+    except Exception as error:
+
+        print(
+            f"Unable to load table "
+            f"{catalog}.{schema}.{table}: "
+            f"{error}"
+        )
 
         result = {
             "catalog": catalog,
@@ -1385,7 +1449,9 @@ def run_dq_checks(
                 False
             ):
 
-                result[rule["id"]] = "FAIL"
+                result[
+                    rule["id"]
+                ] = "FAIL"
 
         result["Total Score"] = 0.0
         result["Overall Status"] = "FAIL"
@@ -1405,7 +1471,9 @@ def run_dq_checks(
     # THRESHOLD HELPER
     # ========================================================
 
-    def threshold_for(dq_id):
+    def threshold_for(
+        dq_id
+    ):
 
         rule = rule_map.get(
             dq_id,
@@ -1422,90 +1490,186 @@ def run_dq_checks(
 
     dq_results = {}
 
-    dq_results["DQ1"] = check_completeness(
-        df,
-        threshold_for("DQ1")
-    )
+    # --------------------------------------------------------
+    # DQ01
+    # --------------------------------------------------------
 
-    dq_results["DQ2"] = check_accuracy(
-        df,
-        threshold_for("DQ2")
-    )
+    if "DQ01" in rule_map:
 
-    dq_results["DQ3"] = check_validity(
-        df,
-        threshold_for("DQ3")
-    )
+        dq_results["DQ01"] = check_completeness(
+            df,
+            threshold_for("DQ01")
+        )
 
-    dq_results["DQ4"] = check_uniqueness(
-        df,
-        threshold_for("DQ4"),
-        f"{catalog}.{schema}.{table}"
-    )
+    # --------------------------------------------------------
+    # DQ02
+    # --------------------------------------------------------
 
-    dq_results["DQ5"] = check_consistency(
-        df,
-        threshold_for("DQ5")
-    )
+    if "DQ02" in rule_map:
 
-    dq_results["DQ6"] = check_integrity(
-        df,
-        threshold_for("DQ6")
-    )
+        dq_results["DQ02"] = check_accuracy(
+            df,
+            threshold_for("DQ02")
+        )
 
-    dq_results["DQ7"] = check_timeliness(
-        df,
-        threshold_for("DQ7")
-    )
+    # --------------------------------------------------------
+    # DQ03
+    # --------------------------------------------------------
 
-    dq_results["DQ8"] = check_conformity(
-        df,
-        threshold_for("DQ8")
-    )
+    if "DQ03" in rule_map:
 
-    dq_results["DQ9"] = check_range(
-        df,
-        threshold_for("DQ9")
-    )
+        dq_results["DQ03"] = check_validity(
+            df,
+            threshold_for("DQ03")
+        )
 
-    dq_results["DQ10"] = check_duplicate(
-        df,
-        threshold_for("DQ10")
-    )
+    # --------------------------------------------------------
+    # DQ04
+    # --------------------------------------------------------
 
-    dq_results["DQ11"] = check_null(
-        df,
-        threshold_for("DQ11")
-    )
+    if "DQ04" in rule_map:
 
-    dq_results["DQ12"] = check_length(
-        df,
-        threshold_for("DQ12")
-    )
+        dq_results["DQ04"] = check_uniqueness(
+            df,
+            threshold_for("DQ04"),
+            f"{catalog}.{schema}.{table}"
+        )
 
-    dq_results["DQ13"] = check_data_type(
-        df,
-        threshold_for("DQ13")
-    )
+    # --------------------------------------------------------
+    # DQ05
+    # --------------------------------------------------------
 
-    dq_results["DQ14"] = check_pattern(
-        df,
-        threshold_for("DQ14")
-    )
+    if "DQ05" in rule_map:
 
-    dq_results["DQ15"] = check_business_rule(
-        df,
-        threshold_for("DQ15")
-    )
+        dq_results["DQ05"] = check_consistency(
+            df,
+            threshold_for("DQ05")
+        )
 
-    dq_results["DQ16"] = check_volume(
-        df,
-        threshold_for("DQ16"),
-        baseline_row_count
-    )
+    # --------------------------------------------------------
+    # DQ06
+    # --------------------------------------------------------
+
+    if "DQ06" in rule_map:
+
+        dq_results["DQ06"] = check_integrity(
+            df,
+            threshold_for("DQ06")
+        )
+
+    # --------------------------------------------------------
+    # DQ07
+    # --------------------------------------------------------
+
+    if "DQ07" in rule_map:
+
+        dq_results["DQ07"] = check_timeliness(
+            df,
+            threshold_for("DQ07")
+        )
+
+    # --------------------------------------------------------
+    # DQ08
+    # --------------------------------------------------------
+
+    if "DQ08" in rule_map:
+
+        dq_results["DQ08"] = check_conformity(
+            df,
+            threshold_for("DQ08")
+        )
+
+    # --------------------------------------------------------
+    # DQ09
+    # --------------------------------------------------------
+
+    if "DQ09" in rule_map:
+
+        dq_results["DQ09"] = check_range(
+            df,
+            threshold_for("DQ09")
+        )
+
+    # --------------------------------------------------------
+    # DQ10
+    # --------------------------------------------------------
+
+    if "DQ10" in rule_map:
+
+        dq_results["DQ10"] = check_duplicate(
+            df,
+            threshold_for("DQ10")
+        )
+
+    # --------------------------------------------------------
+    # DQ11
+    # --------------------------------------------------------
+
+    if "DQ11" in rule_map:
+
+        dq_results["DQ11"] = check_null(
+            df,
+            threshold_for("DQ11")
+        )
+
+    # --------------------------------------------------------
+    # DQ12
+    # --------------------------------------------------------
+
+    if "DQ12" in rule_map:
+
+        dq_results["DQ12"] = check_length(
+            df,
+            threshold_for("DQ12")
+        )
+
+    # --------------------------------------------------------
+    # DQ13
+    # --------------------------------------------------------
+
+    if "DQ13" in rule_map:
+
+        dq_results["DQ13"] = check_data_type(
+            df,
+            threshold_for("DQ13")
+        )
+
+    # --------------------------------------------------------
+    # DQ14
+    # --------------------------------------------------------
+
+    if "DQ14" in rule_map:
+
+        dq_results["DQ14"] = check_pattern(
+            df,
+            threshold_for("DQ14")
+        )
+
+    # --------------------------------------------------------
+    # DQ15
+    # --------------------------------------------------------
+
+    if "DQ15" in rule_map:
+
+        dq_results["DQ15"] = check_business_rule(
+            df,
+            threshold_for("DQ15")
+        )
+
+    # --------------------------------------------------------
+    # DQ16
+    # --------------------------------------------------------
+
+    if "DQ16" in rule_map:
+
+        dq_results["DQ16"] = check_volume(
+            df,
+            threshold_for("DQ16"),
+            baseline_row_count
+        )
 
     # ========================================================
-    # ONLY ENABLED RULES PARTICIPATE IN SCORE
+    # ENABLED RULES
     # ========================================================
 
     enabled_rules = [
@@ -1518,7 +1682,7 @@ def run_dq_checks(
     ]
 
     # ========================================================
-    # TOTAL WEIGHT
+    # TOTAL ENABLED WEIGHT
     # ========================================================
 
     total_enabled_weight = sum(
@@ -1586,7 +1750,7 @@ def run_dq_checks(
         total_score = 0.0
 
     # ========================================================
-    # OVERALL STATUS FROM YAML
+    # OVERALL STATUS
     # ========================================================
 
     if not isinstance(
@@ -1600,38 +1764,27 @@ def run_dq_checks(
             "fail": 0
         }
 
-    overall_pass = float(
+    pass_threshold = float(
         overall_thresholds.get(
             "pass",
             90
         )
     )
 
-    overall_warning = float(
+    warning_threshold = float(
         overall_thresholds.get(
             "warning",
             75
         )
     )
 
-    overall_fail = float(
-        overall_thresholds.get(
-            "fail",
-            0
-        )
-    )
-
-    if total_score >= overall_pass:
+    if total_score >= pass_threshold:
 
         overall_status = "PASS"
 
-    elif total_score >= overall_warning:
+    elif total_score >= warning_threshold:
 
         overall_status = "WARNING"
-
-    elif total_score >= overall_fail:
-
-        overall_status = "FAIL"
 
     else:
 
@@ -1647,23 +1800,14 @@ def run_dq_checks(
         "table": table
     }
 
-    # --------------------------------------------------------
-    # Add only configured rules
-    # --------------------------------------------------------
-
-    for rule in rules:
+    for rule in enabled_rules:
 
         rule_id = rule["id"]
 
-        if rule.get(
-            "enabled",
-            False
-        ):
-
-            result[rule_id] = dq_results.get(
-                rule_id,
-                "FAIL"
-            )
+        result[rule_id] = dq_results.get(
+            rule_id,
+            "FAIL"
+        )
 
     result["Total Score"] = total_score
 
