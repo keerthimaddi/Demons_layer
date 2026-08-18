@@ -327,16 +327,22 @@ def check_validity(
 
 def check_uniqueness(
     df,
-    threshold
+    threshold,
+    table_name=None
 ):
     """
     DQ4 - Uniqueness
 
-    Metric:
-        duplicate_percentage
+    Checks duplicate values in configured unique-key columns.
 
-    Candidate business keys:
-        columns containing 'id' or 'key'
+    The unique keys are configured in dq_rules.yml.
+
+    Example:
+
+        wmg.default.customers_100:
+            - customer_id
+
+    NULL values are not treated as duplicate values.
     """
 
     try:
@@ -346,22 +352,84 @@ def check_uniqueness(
         if total_rows == 0:
             return "FAIL"
 
-        candidate_columns = [
-            c for c in df.columns
-            if (
-                    "id" in c.lower()
-                    or "key" in c.lower()
-            )
-        ]
+        # ----------------------------------------------------
+        # Get configured unique keys
+        # ----------------------------------------------------
 
-        print(
-            f"DQ4 candidate uniqueness columns: {candidate_columns}"
+        unique_keys = threshold.get(
+            "unique_keys",
+            {}
         )
+
+        if not isinstance(unique_keys, dict):
+            unique_keys = {}
+
+        configured_columns = unique_keys.get(
+            table_name
+        )
+
+        # ----------------------------------------------------
+        # If table is explicitly configured with []
+        # then there is no uniqueness check to perform.
+        # ----------------------------------------------------
+
+        if configured_columns == []:
+            print(
+                "DQ4: No unique key configured for "
+                f"{table_name}"
+            )
+            return "PASS"
+
+        # ----------------------------------------------------
+        # If table has configured keys, use them.
+        # ----------------------------------------------------
+
+        if configured_columns:
+
+            candidate_columns = [
+                column
+                for column in configured_columns
+                if column in df.columns
+            ]
+
+            print(
+                "DQ4 configured uniqueness columns: "
+                f"{candidate_columns}"
+            )
+
+        else:
+
+            # ------------------------------------------------
+            # Fallback automatic detection
+            # ------------------------------------------------
+
+            candidate_columns = [
+                column
+                for column in df.columns
+                if (
+                    column.lower().endswith("_id")
+                    or column.lower().endswith("_key")
+                )
+            ]
+
+            print(
+                "DQ4 automatically detected columns: "
+                f"{candidate_columns}"
+            )
+
+        # ----------------------------------------------------
+        # No candidate columns
+        # ----------------------------------------------------
 
         if not candidate_columns:
             return "PASS"
 
-        duplicate_records = 0
+        total_duplicate_records = 0
+        total_non_null_records = 0
+
+        # ----------------------------------------------------
+        # Check each unique key
+        # ----------------------------------------------------
 
         for column_name in candidate_columns:
 
@@ -369,7 +437,14 @@ def check_uniqueness(
                 col(column_name).isNotNull()
             )
 
-            duplicate_rows = (
+            non_null_count = (
+                non_null_df.count()
+            )
+
+            if non_null_count == 0:
+                continue
+
+            duplicate_groups = (
                 non_null_df
                 .groupBy(column_name)
                 .count()
@@ -379,43 +454,56 @@ def check_uniqueness(
             )
 
             duplicate_count = (
-                duplicate_rows
+                duplicate_groups
                 .selectExpr(
-                    "coalesce(sum(count), 0) as total"
+                    "coalesce(sum(count), 0) "
+                    "as duplicate_count"
                 )
-                .collect()[0]["total"]
+                .collect()[0]["duplicate_count"]
             )
 
             if duplicate_count is None:
                 duplicate_count = 0
 
-            null_count = (
-                df.filter(
-                    col(column_name).isNull()
-                ).count()
-            )
-
-            duplicate_records += (
+            total_duplicate_records += (
                 duplicate_count
-                + null_count
             )
 
-        total_possible = (
-            total_rows
-            * len(candidate_columns)
+            total_non_null_records += (
+                non_null_count
+            )
+
+        # ----------------------------------------------------
+        # No values to check
+        # ----------------------------------------------------
+
+        if total_non_null_records == 0:
+            return "PASS"
+
+        # ----------------------------------------------------
+        # Calculate duplicate percentage
+        # ----------------------------------------------------
+
+        duplicate_percentage = calculate_percentage(
+            total_duplicate_records,
+            total_non_null_records
         )
 
-        failure_percentage = calculate_percentage(
-            duplicate_records,
-            total_possible
+        print(
+            f"DQ4 duplicate percentage: "
+            f"{duplicate_percentage:.2f}%"
         )
 
         return get_status(
-            failure_percentage,
+            duplicate_percentage,
             threshold
         )
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"DQ4 uniqueness check failed: {e}"
+        )
 
         return "FAIL"
 
@@ -1351,7 +1439,8 @@ def run_dq_checks(
 
     dq_results["DQ4"] = check_uniqueness(
         df,
-        threshold_for("DQ4")
+        threshold_for("DQ4"),
+        f"{catalog}.{schema}.{table}"
     )
 
     dq_results["DQ5"] = check_consistency(

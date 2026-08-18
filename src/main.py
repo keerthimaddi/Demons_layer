@@ -40,6 +40,10 @@ def main():
 
     rules, overall_thresholds = load_dq_rules()
 
+    # ========================================================
+    # ENABLED RULES
+    # ========================================================
+
     enabled_rules = [
         rule
         for rule in rules
@@ -71,20 +75,27 @@ def main():
         f"Total Weight      : {total_weight}"
     )
 
+    # ========================================================
+    # OVERALL SCORE THRESHOLDS
+    # ========================================================
+
     print(
         "\nOverall Score Thresholds:"
     )
 
     print(
-        f"PASS    >= {overall_thresholds.get('pass', 90)}"
+        f"PASS    >= "
+        f"{overall_thresholds.get('pass', 90)}"
     )
 
     print(
-        f"WARNING >= {overall_thresholds.get('warning', 75)}"
+        f"WARNING >= "
+        f"{overall_thresholds.get('warning', 75)}"
     )
 
     print(
-        f"FAIL    < {overall_thresholds.get('warning', 75)}"
+        f"FAIL    < "
+        f"{overall_thresholds.get('warning', 75)}"
     )
 
     # ========================================================
@@ -122,13 +133,12 @@ def main():
         )
 
         # ----------------------------------------------------
-        # Baseline volume
-        #
-        # Not available yet.
-        # DQ16 will use PASS when the table is non-empty.
-        #
-        # Later this can come from a historical volume table.
+        # TEMPORARY VOLUME BASELINE
         # ----------------------------------------------------
+        #
+        # DQ16 will be properly implemented later.
+        # For now, keep the existing behavior.
+        #
 
         baseline_row_count = None
 
@@ -147,7 +157,7 @@ def main():
         )
 
         # ----------------------------------------------------
-        # Dynamic DQ output
+        # DQ RESULT OUTPUT
         # ----------------------------------------------------
 
         dq_output = " | ".join(
@@ -167,7 +177,7 @@ def main():
         )
 
     # ========================================================
-    # FINAL REPORT
+    # FINAL DATA QUALITY REPORT
     # ========================================================
 
     if results:
@@ -177,7 +187,7 @@ def main():
         )
 
         # ----------------------------------------------------
-        # Dynamic DQ columns
+        # DQ COLUMNS
         # ----------------------------------------------------
 
         dq_columns = [
@@ -199,7 +209,7 @@ def main():
         ]
 
         # ----------------------------------------------------
-        # Select columns that actually exist
+        # SELECT AVAILABLE COLUMNS
         # ----------------------------------------------------
 
         available_columns = [
@@ -213,7 +223,7 @@ def main():
         )
 
         # ----------------------------------------------------
-        # Display report
+        # DISPLAY FINAL REPORT
         # ----------------------------------------------------
 
         print("\n======================================")
@@ -235,6 +245,10 @@ def main():
             "\nNo tables were evaluated."
         )
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
     main()
